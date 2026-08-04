@@ -43,7 +43,7 @@ jobs:
             echo "🧹 Cleaning existing temp_repo directory..."
             rm -rf temp_repo
           fi
-          CLONE_URL="https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          CLONE_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           echo "🔍 DEBUG - Clone URL: @github.com/${{ github.repository }}.git"
           git clone "$CLONE_URL" temp_repo
           cp temp_repo/meta_release.txt . 2>/dev/null || echo "⚠️ meta_release.txt not found, using workflow inputs"
