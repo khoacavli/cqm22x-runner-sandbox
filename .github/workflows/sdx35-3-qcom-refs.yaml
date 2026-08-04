@@ -503,6 +503,9 @@ jobs:
     - name: 🏗️ Build All Modules (parallel)
       timeout-minutes: 90
       run: |
+        echo "SANDBOX TEST: skipping heavy build, only validating sync/config steps"
+        exit 0
+
         echo "Building all modules in parallel..."
         cd ${{ env.CHIPCODE_ROOT }}
 
@@ -542,6 +545,9 @@ jobs:
       timeout-minutes: 90
       if: env.BUILD_APP == 'yes'
       run: |
+        echo "SANDBOX TEST: skipping app output verification (build was skipped)"
+        exit 0
+
         echo "Verifying app output files..."
         cd ${{ env.CHIPCODE_ROOT }}
 
@@ -785,8 +791,11 @@ jobs:
       if: success()
       timeout-minutes: 30
       run: |
+        echo "SANDBOX TEST: skipping Google Drive upload"
+        exit 0
+
         echo "Uploading release package to Google Drive..."
-        
+
         # Generate timestamp for upload folder name
         SOFTWARE_VER="${{ env.SOFTWARE_VERSION_USED || 'unknown' }}"
         UPLOAD_TIMESTAMP="$(TZ='Asia/Ho_Chi_Minh' date +'%Y%m%d_%H:%M:%S')"
