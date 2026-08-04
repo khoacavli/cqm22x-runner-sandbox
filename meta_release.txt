@@ -13,7 +13,7 @@ CHIPCODE_REPO=github.com/cavli-wireless/cqm22x-chipcode.git
 CHIPCODE_BRANCH=v452
 
 BUILD_SCRIPT_REPO=github.com/cavli-wireless/cqm22x-build-scripts.git
-BUILD_SCRIPT_BRANCH=tom/support_m2
+BUILD_SCRIPT_BRANCH=test/sdk-in-build
 
 CAVLI_SERVICES_REPO=github.com/cavli-wireless/cavli_linux_services.git
 CAVLI_SERVICES_BRANCH=main

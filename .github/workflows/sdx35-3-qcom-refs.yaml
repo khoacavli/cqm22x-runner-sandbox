@@ -503,27 +503,24 @@ jobs:
     - name: 🏗️ Build All Modules (parallel)
       timeout-minutes: 90
       run: |
-        echo "SANDBOX TEST: skipping heavy build, only validating sync/config steps"
-        exit 0
-
-        echo "Building all modules in parallel..."
+        echo "SANDBOX TEST: scoped to -m tz only (fast module) to validate new build.sh logging/timing/parallel wiring"
         cd ${{ env.CHIPCODE_ROOT }}
 
         PROFILE="${{ env.BUILD_PROFILE }}"
         MAX_ATTEMPTS=2
         ATTEMPT=1
 
-        echo "🔧 Modules: all (rpm, boot, modem, tz, recovery, app, meta, sdk)"
+        echo "🔧 Modules: tz (sandbox test scope, not full 'all')"
         echo "🔧 Profile: $PROFILE"
         echo "🔧 Software version: $SOFTWARE_VERSION / Modem version: $MODEM_VERSION"
 
         while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
           echo ""
-          echo "🔄 Building all modules (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
-          echo "Command: ./build/build.sh -t $PROFILE -m all -p -v $SOFTWARE_VERSION -w $MODEM_VERSION -M CQM220-3"
+          echo "🔄 Building tz module (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
+          echo "Command: ./build/build.sh -t $PROFILE -m tz -p -v $SOFTWARE_VERSION -w $MODEM_VERSION -M CQM220-3"
 
-          if ./build/build.sh -t "$PROFILE" -m all -p -v "$SOFTWARE_VERSION" -w "$MODEM_VERSION" -M "CQM220-3"; then
-            echo "✅ All modules built successfully"
+          if ./build/build.sh -t "$PROFILE" -m tz -p -v "$SOFTWARE_VERSION" -w "$MODEM_VERSION" -M "CQM220-3"; then
+            echo "✅ tz module built successfully"
             break
           else
             EXIT_CODE=$?
@@ -539,6 +536,17 @@ jobs:
             fi
           fi
         done
+
+    # Upload build logs (per-module logs + timing.log) so they can be downloaded from the
+    # Actions run page, regardless of whether the build step above succeeded or failed.
+    - name: ⬆️ Upload Build Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-${{ github.run_id }}
+        path: ${{ env.CHIPCODE_ROOT }}/build_logs/
+        if-no-files-found: warn
+        retention-days: 14
 
     # Step 10: Verify App Module Output
     - name: 🔍 Verify App Module Output
