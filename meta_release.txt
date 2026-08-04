@@ -1,0 +1,32 @@
+# CQM22x Multi-Repo Build Configuration
+# This file contains all build configuration parameters
+# Format: KEY=VALUE (no spaces around =)
+
+# Repository URLs and Branches
+APP_REPO=github.com/cavli-wireless/cqm22x-apps-proc.git
+APP_BRANCH=v452
+
+MODEM_REPO=github.com/cavli-wireless/cqm22x-modem-proc.git
+MODEM_BRANCH=cavli/qcom_refs
+
+CHIPCODE_REPO=github.com/cavli-wireless/cqm22x-chipcode.git
+CHIPCODE_BRANCH=v452
+
+BUILD_SCRIPT_REPO=github.com/cavli-wireless/cqm22x-build-scripts.git
+BUILD_SCRIPT_BRANCH=tom/support_m2
+
+CAVLI_SERVICES_REPO=github.com/cavli-wireless/cavli_linux_services.git
+CAVLI_SERVICES_BRANCH=main
+
+CAVLI_SDK_REPO=github.com/cavli-wireless/cavli_sdk_tools_linux.git
+CAVLI_SDK_BRANCH=tom_dev
+
+# Version Information
+SOFTWARE_VERSION=1.0.1
+MODEM_VERSION=1.0.1
+
+# Build Configuration
+PROFILE_BUILD=MBB-CAV
+
+#manifest tag
+RELEASE_TAG=TEST
