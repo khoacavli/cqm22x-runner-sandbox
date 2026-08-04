@@ -503,24 +503,24 @@ jobs:
     - name: 🏗️ Build All Modules (parallel)
       timeout-minutes: 90
       run: |
-        echo "SANDBOX TEST: scoped to -m tz only (fast module) to validate new build.sh logging/timing/parallel wiring"
+        echo "SANDBOX TEST: full build (-m all) — boot/modem/tz/app/recovery/meta + SDK gen"
         cd ${{ env.CHIPCODE_ROOT }}
 
         PROFILE="${{ env.BUILD_PROFILE }}"
         MAX_ATTEMPTS=2
         ATTEMPT=1
 
-        echo "🔧 Modules: tz (sandbox test scope, not full 'all')"
+        echo "🔧 Modules: all"
         echo "🔧 Profile: $PROFILE"
         echo "🔧 Software version: $SOFTWARE_VERSION / Modem version: $MODEM_VERSION"
 
         while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
           echo ""
-          echo "🔄 Building tz module (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
-          echo "Command: ./build/build.sh -t $PROFILE -m tz -p -V $SOFTWARE_VERSION -w $MODEM_VERSION -M CQM220-3"
+          echo "🔄 Building all modules (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
+          echo "Command: ./build/build.sh -t $PROFILE -m all -p -V $SOFTWARE_VERSION -w $MODEM_VERSION -M CQM220-3"
 
-          if ./build/build.sh -t "$PROFILE" -m tz -p -V "$SOFTWARE_VERSION" -w "$MODEM_VERSION" -M "CQM220-3"; then
-            echo "✅ tz module built successfully"
+          if ./build/build.sh -t "$PROFILE" -m all -p -V "$SOFTWARE_VERSION" -w "$MODEM_VERSION" -M "CQM220-3"; then
+            echo "✅ All modules built successfully"
             break
           else
             EXIT_CODE=$?
@@ -553,9 +553,6 @@ jobs:
       timeout-minutes: 90
       if: env.BUILD_APP == 'yes'
       run: |
-        echo "SANDBOX TEST: skipping app output verification (build was skipped)"
-        exit 0
-
         echo "Verifying app output files..."
         cd ${{ env.CHIPCODE_ROOT }}
 
@@ -793,6 +790,17 @@ jobs:
         # Save release folder info
         echo "RELEASE_FOLDER=$RELEASE_FOLDER" >> $GITHUB_ENV
         echo "RELEASE_PATH=${{ env.WORKSPACE_ROOT }}/$RELEASE_FOLDER" >> $GITHUB_ENV
+
+    # Upload release package (SDK tarball, binaries.zip, firmware) as a downloadable
+    # artifact since the Google Drive upload step below is stubbed out for this sandbox test.
+    - name: ⬆️ Upload Release Package (sandbox artifact)
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-package-${{ github.run_id }}
+        path: ${{ env.RELEASE_PATH }}
+        if-no-files-found: warn
+        retention-days: 14
 
     # Step 14: Upload Release Package
     - name: ☁️ Upload Release Package to Google Drive
