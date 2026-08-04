@@ -517,9 +517,9 @@ jobs:
         while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
           echo ""
           echo "🔄 Building tz module (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
-          echo "Command: ./build/build.sh -t $PROFILE -m tz -p -v $SOFTWARE_VERSION -w $MODEM_VERSION -M CQM220-3"
+          echo "Command: ./build/build.sh -t $PROFILE -m tz -p -V $SOFTWARE_VERSION -w $MODEM_VERSION -M CQM220-3"
 
-          if ./build/build.sh -t "$PROFILE" -m tz -p -v "$SOFTWARE_VERSION" -w "$MODEM_VERSION" -M "CQM220-3"; then
+          if ./build/build.sh -t "$PROFILE" -m tz -p -V "$SOFTWARE_VERSION" -w "$MODEM_VERSION" -M "CQM220-3"; then
             echo "✅ tz module built successfully"
             break
           else
