@@ -172,15 +172,19 @@ jobs:
         echo "Cleaning workspace..."
         cd ${{ env.WORKSPACE_ROOT }}
         
-        # Remove existing chipcode directory if it exists
+        # Remove existing chipcode directory if it exists -- every build still starts from
+        # a genuinely clean working tree (no leftover build_dir/staging_dir/.config cruft).
         if [ -d "chipcode" ]; then
           echo "🗑️ Removing existing chipcode directory..."
           sudo rm -rf chipcode
-          rm -rf .repo
           echo "✅ Chipcode directory cleaned"
         else
           echo "ℹ️ No existing chipcode directory found"
         fi
+
+        # .repo/ (repo tool's git object cache) is intentionally KEPT across runs so the
+        # next "repo sync" is an incremental fetch instead of a full re-clone of every
+        # project. It self-heals if it ever causes a problem -- see Initialize Repo Tool.
 
     # Step 3: Initialize Repo Tool
     - name: 📥 Initialize Repo Tool
@@ -207,30 +211,37 @@ jobs:
         # Create a local branch so repo init can reference it (avoids detached HEAD issue)
         git checkout -B repo-manifest-branch
         cd ${{ env.WORKSPACE_ROOT }}
-        
-        echo "🔄 Initializing repo with manifest..."
-        
-        if repo init -u "$MANIFESTS_CLONE" -b repo-manifest-branch -m chipcode-cqm22x-3-qcom-refs.xml; then
+
+        # .repo/ is normally kept across runs (see Clean Workspace step), so this is usually
+        # an incremental fetch, not a full clone. --depth=1 keeps each project shallow for
+        # speed. If the cached .repo state causes any problem -- init, sync, or LFS pull --
+        # wipe it and retry once from a completely fresh clone, so a stale/corrupt cache can
+        # never hard-fail the build; it just costs one full sync instead of a fast one.
+        run_repo_sync() {
+          echo "🔄 Initializing repo with manifest (depth=1)..."
+          repo init -u "$MANIFESTS_CLONE" -b repo-manifest-branch -m chipcode-cqm22x-3-qcom-refs.xml --depth=1 || return 1
           echo "✅ Repo initialized successfully"
-        else
-          echo "❌ Repo initialization failed"
-          exit 1
-        fi
-        
-        echo "🔄 Syncing repositories..."
-        if repo sync; then
+
+          echo "🔄 Syncing repositories..."
+          repo sync || return 1
           echo "✅ Repo sync completed successfully"
-        else
-          echo "❌ Repo sync failed"
-          exit 1
-        fi
-        
-        echo "🔄 Pulling LFS files..."
-        if repo forall -c git lfs pull; then
+
+          echo "🔄 Pulling LFS files..."
+          repo forall -c git lfs pull || return 1
           echo "✅ LFS files pulled successfully"
+        }
+
+        if run_repo_sync; then
+          echo "✅ Repo ready (used cached .repo state)"
         else
-          echo "❌ LFS pull failed"
-          exit 1
+          echo "⚠️ Repo init/sync/LFS failed -- wiping .repo cache and retrying once from a fresh clone"
+          rm -rf .repo
+          if run_repo_sync; then
+            echo "✅ Repo ready (fresh clone after cache wipe)"
+          else
+            echo "❌ Repo sync failed even after a full clean retry"
+            exit 1
+          fi
         fi
         
         echo "✅ All repositories cloned successfully"
