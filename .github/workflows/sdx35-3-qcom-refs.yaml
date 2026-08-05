@@ -791,17 +791,6 @@ jobs:
         echo "RELEASE_FOLDER=$RELEASE_FOLDER" >> $GITHUB_ENV
         echo "RELEASE_PATH=${{ env.WORKSPACE_ROOT }}/$RELEASE_FOLDER" >> $GITHUB_ENV
 
-    # Upload release package (SDK tarball, binaries.zip, firmware) as a downloadable
-    # artifact since the Google Drive upload step below is stubbed out for this sandbox test.
-    - name: ⬆️ Upload Release Package (sandbox artifact)
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-package-${{ github.run_id }}
-        path: ${{ env.RELEASE_PATH }}
-        if-no-files-found: warn
-        retention-days: 14
-
     # Step 14: Upload Release Package
     - name: ☁️ Upload Release Package to Google Drive
       if: success()
@@ -823,7 +812,16 @@ jobs:
         echo "🔄 Starting upload to Google Drive..."
         if "$RCLONE_BIN" --config "$RCLONE_CONF" copy "${{ env.RELEASE_FOLDER }}" "GGDrive:/Cavli-Team/$UPLOAD_FOLDER_NAME" --progress; then
           echo "🎉 Release package upload completed successfully!"
-          "$RCLONE_BIN" --config "$RCLONE_CONF" link "GGDrive:/Cavli-Team/$UPLOAD_FOLDER_NAME" || true
+          DRIVE_LINK=$("$RCLONE_BIN" --config "$RCLONE_CONF" link "GGDrive:/Cavli-Team/$UPLOAD_FOLDER_NAME")
+          echo "🔗 $DRIVE_LINK"
+
+          {
+            echo "## ☁️ Google Drive"
+            echo ""
+            echo "**Folder:** \`Cavli-Team/$UPLOAD_FOLDER_NAME\`"
+            echo ""
+            echo "**Link:** $DRIVE_LINK"
+          } >> "$GITHUB_STEP_SUMMARY"
         else
           echo "💥 Upload to Google Drive failed"
           exit 1
