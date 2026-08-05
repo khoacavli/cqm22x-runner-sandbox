@@ -807,31 +807,25 @@ jobs:
       if: success()
       timeout-minutes: 30
       run: |
-        echo "SANDBOX TEST: skipping Google Drive upload"
-        exit 0
+        echo "SANDBOX TEST: uploading to share/khoa/test (temporary, user will delete manually)"
 
-        echo "Uploading release package to Google Drive..."
+        RCLONE_BIN=/usr/bin/rclone
+        RCLONE_CONF=/home/user/share_data/rclone-cli/Cavli-Team.conf
+        UPLOAD_FOLDER_NAME="share/khoa/test"
 
-        # Generate timestamp for upload folder name
-        SOFTWARE_VER="${{ env.SOFTWARE_VERSION_USED || 'unknown' }}"
-        UPLOAD_TIMESTAMP="$(TZ='Asia/Ho_Chi_Minh' date +'%Y%m%d_%H:%M:%S')"
-        UPLOAD_FOLDER_NAME="cqm_220_action/sdx35-3-qcom_refs/v${SOFTWARE_VER}_${UPLOAD_TIMESTAMP}"
-        
         cd ${{ env.WORKSPACE_ROOT }}
-        
+
         echo "📤 Upload details:"
         echo "  🗂️ Current directory: ${PWD}"
         echo "  📁 Local folder: ${{ env.RELEASE_FOLDER }}"
-        echo "  📁 Remote folder: Cavli-Team/share/$UPLOAD_FOLDER_NAME"
-        
-        # Upload to Google Drive
-        echo "🔄 Starting upload to Google Drive..."
-        echo "Command: upload_ggdrive ${{ env.RELEASE_FOLDER }} $UPLOAD_FOLDER_NAME"
+        echo "  📁 Remote folder: Cavli-Team/$UPLOAD_FOLDER_NAME"
 
-        if upload_ggdrive "${{ env.RELEASE_FOLDER }}" "$UPLOAD_FOLDER_NAME" || true; then
+        echo "🔄 Starting upload to Google Drive..."
+        if "$RCLONE_BIN" --config "$RCLONE_CONF" copy "${{ env.RELEASE_FOLDER }}" "GGDrive:/Cavli-Team/$UPLOAD_FOLDER_NAME" --progress; then
           echo "🎉 Release package upload completed successfully!"
+          "$RCLONE_BIN" --config "$RCLONE_CONF" link "GGDrive:/Cavli-Team/$UPLOAD_FOLDER_NAME" || true
         else
-          echo "⚠️ Upload command finished (ignoring return code)"
+          echo "💥 Upload to Google Drive failed"
+          exit 1
         fi
-        echo "🔗 Access your files at: https://drive.google.com/drive/folders/1AonRfvfNpLSH7_u2qepGVJ_HkfTLLzW-"
      
