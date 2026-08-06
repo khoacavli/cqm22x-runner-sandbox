@@ -1,8 +1,40 @@
 name: sdx35-3-qcom_refs Build Release
 
-# Manual trigger workflow - All configuration from meta_release.txt
+# Manual trigger workflow - All configuration from meta_release.txt, optionally
+# overridden per-run via the inputs below (leave blank to use meta_release.txt).
 on:
   workflow_dispatch:
+    inputs:
+      profile_build:
+        description: 'PROFILE_BUILD override (blank = use meta_release.txt)'
+        required: false
+        type: choice
+        default: ''
+        options:
+          - ''
+          - MBB-CAV
+          - MBB
+          - M2-CAV
+          - M2
+      software_version:
+        description: 'SOFTWARE_VERSION override (blank = use meta_release.txt)'
+        required: false
+        type: string
+      modem_version:
+        description: 'MODEM_VERSION override (blank = use meta_release.txt)'
+        required: false
+        type: string
+      release_tag:
+        description: 'RELEASE_TAG override -- manifest tag/branch (blank = use meta_release.txt)'
+        required: false
+        type: string
+
+# Same workflow + same branch/ref can't have two runs in flight at once -- a repeat
+# dispatch (accidental double-click, retry after a transient API error, etc.) queues
+# behind the current run instead of racing it as a separate duplicate run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 # Environment variables
 env:
@@ -75,7 +107,27 @@ jobs:
               export "$key"="$value"
             fi
           done < meta_release.txt
-          
+
+          # Manual-trigger overrides: workflow_dispatch inputs win over meta_release.txt
+          # when set, so a one-off test build (different profile/version/tag) doesn't
+          # require editing + committing meta_release.txt first. Left blank = no change.
+          echo ""
+          echo "🎛️ Checking workflow_dispatch input overrides..."
+          declare -A INPUT_OVERRIDES=(
+            [PROFILE_BUILD]="${{ github.event.inputs.profile_build }}"
+            [SOFTWARE_VERSION]="${{ github.event.inputs.software_version }}"
+            [MODEM_VERSION]="${{ github.event.inputs.modem_version }}"
+            [RELEASE_TAG]="${{ github.event.inputs.release_tag }}"
+          )
+          for key in "${!INPUT_OVERRIDES[@]}"; do
+            value="${INPUT_OVERRIDES[$key]}"
+            if [ -n "$value" ]; then
+              echo "  🎛️ Overriding $key: ${!key:-<unset>} -> $value"
+              echo "$key=$value" >> $GITHUB_ENV
+              export "$key"="$value"
+            fi
+          done
+
           # Validate all required configuration parameters
           echo "🔍 Validating required configuration parameters..."
           
