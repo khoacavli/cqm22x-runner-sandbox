@@ -552,6 +552,7 @@ jobs:
     # Actions run page, regardless of whether the build step above succeeded or failed.
     - name: ⬆️ Upload Build Logs
       if: always()
+      id: upload_logs
       uses: actions/upload-artifact@v4
       with:
         name: build-logs-${{ github.run_id }}
@@ -825,16 +826,73 @@ jobs:
           echo "🎉 Release package upload completed successfully!"
           DRIVE_LINK=$("$RCLONE_BIN" --config "$RCLONE_CONF" link "GGDrive:/Cavli-Team/$UPLOAD_FOLDER_NAME")
           echo "🔗 $DRIVE_LINK"
-
-          {
-            echo "## ☁️ Google Drive"
-            echo ""
-            echo "**Folder:** \`Cavli-Team/$UPLOAD_FOLDER_NAME\`"
-            echo ""
-            echo "**Link:** $DRIVE_LINK"
-          } >> "$GITHUB_STEP_SUMMARY"
+          # Passed to the "Publish Build Summary" step below, which writes the
+          # actual $GITHUB_STEP_SUMMARY block (kept together with the logs link
+          # and timing chart there instead of split across two step summaries).
+          echo "DRIVE_LINK=$DRIVE_LINK" >> "$GITHUB_ENV"
+          echo "DRIVE_FOLDER=Cavli-Team/$UPLOAD_FOLDER_NAME" >> "$GITHUB_ENV"
         else
           echo "💥 Upload to Google Drive failed"
           exit 1
         fi
-     
+
+    # Step 15: Publish Build Summary -- one place to grab the Drive link + build
+    # logs and see how long each module took, right on the run page (no download
+    # needed). Runs even if an earlier step failed, so the logs link + timing
+    # chart are still available for debugging a broken run; the Drive link line
+    # only appears if that upload actually succeeded (DRIVE_LINK would be unset).
+    - name: 📊 Publish Build Summary
+      if: always()
+      run: |
+        LOGS_ARTIFACT_ID="${{ steps.upload_logs.outputs.artifact-id }}"
+        LOGS_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${LOGS_ARTIFACT_ID}"
+
+        {
+          echo "# 🚀 Build Results"
+          echo ""
+          echo "## 📥 Downloads"
+          echo ""
+          if [ -n "${{ env.DRIVE_LINK }}" ]; then
+            echo "- ☁️ **Release package (Google Drive):** [${{ env.DRIVE_FOLDER }}](${{ env.DRIVE_LINK }})"
+          fi
+          if [ -n "$LOGS_ARTIFACT_ID" ]; then
+            echo "- 📄 **Build logs** (per-module logs + timing_chart.html): [download]($LOGS_URL)"
+          fi
+          echo ""
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        TIMING_LOG="${{ env.CHIPCODE_ROOT }}/build_logs/timing.log"
+        if [ -f "$TIMING_LOG" ]; then
+          {
+            echo "## ⏱️ Module Timing"
+            echo ""
+            echo "| Module | Duration | |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          MAXDUR=$(grep -v '\] TOTAL ' "$TIMING_LOG" | sed -n 's/.*duration=\([0-9]*\)s.*/\1/p' | sort -n | tail -1)
+          [ -z "$MAXDUR" ] && MAXDUR=1
+
+          grep -v '\] TOTAL ' "$TIMING_LOG" | while IFS= read -r LINE; do
+            # recovery's line (written by the SPIN_CHAIN_CMD path, not log_task) has no
+            # "start=+Ns" field -- match on the first space-run after the name instead of
+            # requiring "start=" specifically, so recovery isn't silently dropped from the table.
+            NAME=$(echo "$LINE" | sed -n 's/.*\] \([a-zA-Z_-]*\) .*/\1/p')
+            DUR=$(echo "$LINE" | sed -n 's/.*duration=\([0-9]*\)s.*/\1/p')
+            EXIT=$(echo "$LINE" | sed -n 's/.*exit=\([0-9-]*\).*/\1/p')
+            [ -z "$NAME" ] && continue
+            BARLEN=$(awk -v d="$DUR" -v m="$MAXDUR" 'BEGIN{n=int(d/m*30); if(n<1)n=1; print n}')
+            BAR=$(printf '█%.0s' $(seq 1 "$BARLEN"))
+            MARK=""; [ "$EXIT" != "0" ] && MARK=" ❌"
+            echo "| ${NAME}${MARK} | ${DUR}s | \`${BAR}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          TOTAL_DUR=$(grep '\] TOTAL ' "$TIMING_LOG" | sed -n 's/.*duration=\([0-9]*\)s.*/\1/p')
+          if [ -n "$TOTAL_DUR" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Total internal build time:** ${TOTAL_DUR}s" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        else
+          echo "ℹ️ No timing.log found (build_logs/ missing), skipping timing chart" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
