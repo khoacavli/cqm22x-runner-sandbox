@@ -615,7 +615,19 @@ jobs:
       timeout-minutes: 20
       run: |
         cd "${{ env.CHIPCODE_ROOT }}/OWRT.PRODUCT.2.1/apps_proc/owrt"
+        # set_openwrt_env.sh's own early lines pipe a grep (for PRPL_VERSION_NUMBER)
+        # that has no match in this codebase's include/version.mk (only
+        # VERSION_NUMBER is defined here) -- harmless everywhere else because it's
+        # normally sourced from inside build.sh, a plain script with no `set -e`.
+        # This step's `run:` block defaults to `bash -e -o pipefail`, which turns
+        # that harmless no-match into a silent, immediate step failure (confirmed
+        # via run 31140089508: source aborted at line 7, before any function --
+        # including prebuilt_cache_backup itself -- was even defined). Relax to
+        # match build.sh's non-strict mode while sourcing, then restore -e for the
+        # actual backup call so real failures there are still caught.
+        set +e +o pipefail
         source owrt-qti-conf/set_openwrt_env.sh
+        set -e
         prebuilt_cache_backup
 
     # Upload build logs (per-module logs + timing.log) so they can be downloaded from the
