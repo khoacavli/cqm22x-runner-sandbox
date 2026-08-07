@@ -1,0 +1,82 @@
+name: 🚀 Build Release
+
+# Fixed release branches (cavli_sdx35_iot_le_1_0 for chipcode/app/modem/build,
+# main for cavli_linux_services) filled in as defaults below -- a plain "Run
+# workflow" with everything left as-is builds exactly the official release
+# config. Still selectable per-run from the UI when you genuinely need to
+# build release with a different revision on one project. Always publishes
+# the finished package to Google Drive (see _build-common.yaml's
+# publish_release input) -- for one-off test builds, use "Build Verify" instead.
+on:
+  workflow_dispatch:
+    inputs:
+      profile_build:
+        description: 'PROFILE_BUILD override (blank = use meta_release.txt)'
+        required: false
+        type: choice
+        default: ''
+        options:
+          - ''
+          - MBB-CAV
+          - MBB
+          - M2-CAV
+          - M2
+      software_version:
+        description: 'SOFTWARE_VERSION override (blank = use meta_release.txt)'
+        required: false
+        type: string
+      modem_version:
+        description: 'MODEM_VERSION override (blank = use meta_release.txt)'
+        required: false
+        type: string
+      release_tag:
+        description: 'RELEASE_TAG override -- cqm22x-manifests tag/branch (blank = use meta_release.txt)'
+        required: false
+        type: string
+      app_proc_revision:
+        description: 'cqm22x-apps-proc release branch'
+        required: false
+        type: string
+        default: 'cavli_sdx35_iot_le_1_0'
+      modem_proc_revision:
+        description: 'cqm22x-modem-proc release branch'
+        required: false
+        type: string
+        default: 'cavli_sdx35_iot_le_1_0_r00035.1_1.164485.2'
+      chipcode_revision:
+        description: 'cqm22x-chipcode release branch'
+        required: false
+        type: string
+        default: 'cavli_sdx35_iot_le_1_0'
+      build_scripts_revision:
+        description: 'cqm22x-build-scripts release branch'
+        required: false
+        type: string
+        default: 'cavli_sdx35_iot_le_1_0'
+      cavli_services_revision:
+        description: 'cavli_linux_services release branch'
+        required: false
+        type: string
+        default: 'main'
+      cavli_sdk_revision:
+        description: 'cavli_sdk_tools_linux revision (blank = keep manifest''s pinned commit -- already fixed)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build:
+    uses: ./.github/workflows/_build-common.yaml
+    secrets: inherit
+    with:
+      profile_build: ${{ inputs.profile_build }}
+      software_version: ${{ inputs.software_version }}
+      modem_version: ${{ inputs.modem_version }}
+      release_tag: ${{ inputs.release_tag }}
+      app_proc_revision: ${{ inputs.app_proc_revision }}
+      modem_proc_revision: ${{ inputs.modem_proc_revision }}
+      chipcode_revision: ${{ inputs.chipcode_revision }}
+      build_scripts_revision: ${{ inputs.build_scripts_revision }}
+      cavli_services_revision: ${{ inputs.cavli_services_revision }}
+      cavli_sdk_revision: ${{ inputs.cavli_sdk_revision }}
+      publish_release: true
