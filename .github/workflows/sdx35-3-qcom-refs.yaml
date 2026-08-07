@@ -368,7 +368,12 @@ jobs:
           echo "✅ Repo initialized successfully"
 
           echo "🔄 Syncing repositories..."
-          repo sync || return 1
+          # Uncapped, repo defaults --jobs to nproc (192 on this runner) and
+          # itself warns: "High job count (192 > 100) specified for --jobs;
+          # this may lead to excessive resource usage or diminishing
+          # returns." Cap at 64, same ceiling used for make/scons in
+          # build-scripts, for the same oversubscription reason.
+          repo sync -j64 || return 1
           echo "✅ Repo sync completed successfully"
 
           echo "🔄 Pulling LFS files..."
