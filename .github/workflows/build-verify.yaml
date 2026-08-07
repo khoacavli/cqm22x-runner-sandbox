@@ -12,8 +12,9 @@ name: Build Verify
 #     top of the release branch" without creating a throwaway branch by
 #     hand first. Multiple commits landing on the same project apply in
 #     order (matters if a later one depends on an earlier one).
-# Never publishes to Google Drive (see _build-common.yaml's publish_release
-# input) -- test builds shouldn't clutter the shared release folder.
+# Also publishes to Google Drive (same share/khoa/test sandbox folder as Build
+# Release) -- the point of verifying a change is being able to flash + test it
+# on real hardware, which means the package actually has to be downloadable.
 on:
   workflow_dispatch:
     inputs:
@@ -92,4 +93,4 @@ jobs:
       cavli_services_revision: ${{ inputs.cavli_services_revision }}
       cavli_sdk_revision: ${{ inputs.cavli_sdk_revision }}
       cherry_pick_sha: ${{ inputs.cherry_pick_sha }}
-      publish_release: false
+      publish_release: true
