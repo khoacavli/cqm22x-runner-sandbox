@@ -1,4 +1,4 @@
-name: 🔬 Build Verify
+name: Build Verify
 
 # Same defaults as Build Release (a plain "Run workflow" reproduces the release
 # config exactly) plus two things Build Release doesn't have:

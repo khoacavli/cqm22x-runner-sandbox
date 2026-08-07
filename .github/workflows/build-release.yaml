@@ -1,4 +1,4 @@
-name: 🚀 Build Release
+name: Build Release
 
 # Fixed release branches (cavli_sdx35_iot_le_1_0 for chipcode/app/modem/build,
 # main for cavli_linux_services) filled in as defaults below -- a plain "Run

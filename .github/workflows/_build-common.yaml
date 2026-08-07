@@ -99,7 +99,7 @@ jobs:
     runs-on: [self-hosted, cqm22x-test-runner]
 
     steps:
-    - name: 📋 Pull Meta Configuration
+    - name: Pull Meta Configuration
       run: |
         echo "Reading meta_release.txt configuration file..."
         cd ${{ env.WORKSPACE_ROOT }}
@@ -256,7 +256,7 @@ jobs:
         fi
 
     # Step 2: Clean workspace
-    - name: 🧹 Clean Workspace
+    - name: Clean Workspace
       run: |
         echo "Cleaning workspace..."
         cd ${{ env.WORKSPACE_ROOT }}
@@ -276,7 +276,7 @@ jobs:
         # project. It self-heals if it ever causes a problem -- see Initialize Repo Tool.
 
     # Step 3: Initialize Repo Tool
-    - name: 📥 Initialize Repo Tool
+    - name: Initialize Repo Tool
       timeout-minutes: 90
       run: |
         cd ${{ env.WORKSPACE_ROOT }}
@@ -411,7 +411,7 @@ jobs:
     # only select an existing named ref, it can't inject an ad-hoc commit that was
     # never pushed as a branch/tag, so this has to be a separate step working directly
     # in each project's working tree.
-    - name: 🍒 Cherry-pick Verify Commit(s)
+    - name: Cherry-pick Verify Commit(s)
       if: inputs.cherry_pick_sha != ''
       timeout-minutes: 15
       run: |
@@ -518,7 +518,7 @@ jobs:
         } >> $GITHUB_ENV
 
     # Step 4: Verify All Repositories
-    - name: 🔍 Verify Repository Structure
+    - name: Verify Repository Structure
       timeout-minutes: 10
       run: |
         echo "Verifying all repositories are cloned successfully..."
@@ -543,7 +543,7 @@ jobs:
     # Actual file stamping (VERSION_MAJOR/MINOR/PATCH, CAVLI_FW_VER_I, CAVLI_MODEL_I) now
     # happens inside build.sh itself (via -v/-w/-M), see "Build All Modules" step below.
     # This step only validates + exposes the values for naming/reporting downstream.
-    - name: 🔢 Prepare Version Info
+    - name: Prepare Version Info
       timeout-minutes: 5
       run: |
         if [ -z "${SOFTWARE_VERSION:-}" ]; then
@@ -567,7 +567,7 @@ jobs:
         echo "VERSION_PATCH=$VERSION_PATCH" >> $GITHUB_ENV
 
     # Step 6: Generate Build Version
-    - name: 🏷️ Generate Build Version
+    - name: Generate Build Version
       timeout-minutes: 10
       id: version
       run: |
@@ -685,7 +685,7 @@ jobs:
         cat build_info.txt
 
     # Step 7: Generate build manifest
-    - name: 📄 Generate build manifest
+    - name: Generate build manifest
       timeout-minutes: 10
       run: |
         echo "Generating release build manifest..."
@@ -740,7 +740,7 @@ jobs:
         echo "- Usage: Use this manifest to reproduce the exact same build" >> build_info.txt
 
     # Step 8: Setup Build Configuration
-    - name: 🏗️ Setup Build Configuration
+    - name: Setup Build Configuration
       timeout-minutes: 5
       run: |
         echo "Setting up CQM22x build configuration..."
@@ -786,7 +786,7 @@ jobs:
         echo "✅ Build configuration setup completed"
 
     # Step 9: Build All Modules (parallel)
-    - name: 🏗️ Build All Modules (parallel)
+    - name: Build All Modules (parallel)
       timeout-minutes: 90
       run: |
         echo "SANDBOX TEST: full build (-m all) — boot/modem/tz/app/recovery/meta + SDK gen"
@@ -835,7 +835,7 @@ jobs:
 
     # Upload build logs (per-module logs + timing.log) so they can be downloaded from the
     # Actions run page, regardless of whether the build step above succeeded or failed.
-    - name: ⬆️ Upload Build Logs
+    - name: Upload Build Logs
       if: always()
       id: upload_logs
       uses: actions/upload-artifact@v4
@@ -851,7 +851,7 @@ jobs:
         retention-days: 14
 
     # Step 10: Verify App Module Output
-    - name: 🔍 Verify App Module Output
+    - name: Verify App Module Output
       timeout-minutes: 90
       if: env.BUILD_APP == 'yes'
       run: |
@@ -963,7 +963,7 @@ jobs:
         fi
 
     # Step 11: Build OTA Package
-    - name: 📦 Build OTA Package
+    - name: Build OTA Package
       timeout-minutes: 40
       run: |
         echo "Building OTA package..."
@@ -1006,7 +1006,7 @@ jobs:
         fi
 
     # Step 12: Create Release Package
-    - name: 📦 Create Release Package
+    - name: Create Release Package
       if: success()
       run: |
         echo "Creating release package..."
@@ -1093,7 +1093,7 @@ jobs:
     # Step 13: Upload Release Package -- build-release always runs this
     # (publish_release=true); build-verify skips it (publish_release=false), so
     # one-off test builds never touch the shared Google Drive folder.
-    - name: ☁️ Upload Release Package to Google Drive
+    - name: Upload Release Package to Google Drive
       if: success() && inputs.publish_release
       timeout-minutes: 30
       run: |
@@ -1130,7 +1130,7 @@ jobs:
     # needed). Runs even if an earlier step failed, so the logs link + timing
     # chart are still available for debugging a broken run; the Drive link line
     # only appears if that upload actually succeeded (DRIVE_LINK would be unset).
-    - name: 📊 Publish Build Summary
+    - name: Publish Build Summary
       if: always()
       run: |
         LOGS_ARTIFACT_ID="${{ steps.upload_logs.outputs.artifact-id }}"
