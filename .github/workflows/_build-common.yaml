@@ -404,19 +404,31 @@ jobs:
 
         echo "✅ All repositories cloned successfully"
 
-    # Step 3b: Cherry-pick Verify Commit -- verify-only (blank cherry_pick_sha is a
+    # Step 3b: Cherry-pick Verify Commit(s) -- verify-only (blank cherry_pick_sha is a
     # no-op, which is always the case for build-release since it doesn't expose this
     # input). Runs after repo sync so it operates on the real checkouts, not the
     # disposable manifest clone -- the manifest-revision-override mechanism above can
     # only select an existing named ref, it can't inject an ad-hoc commit that was
     # never pushed as a branch/tag, so this has to be a separate step working directly
     # in each project's working tree.
-    - name: 🍒 Cherry-pick Verify Commit
+    - name: 🍒 Cherry-pick Verify Commit(s)
       if: inputs.cherry_pick_sha != ''
       timeout-minutes: 15
       run: |
         cd ${{ env.CHIPCODE_ROOT }}
-        SHA="${{ inputs.cherry_pick_sha }}"
+
+        # One or more SHAs, comma- and/or newline-separated (either works, mix freely).
+        # Multiple SHAs for the SAME repo are applied in the order given -- matters if
+        # a later one depends on an earlier one. Multiple SHAs across DIFFERENT repos
+        # just each land on their own project, independently.
+        readarray -t SHA_LIST < <(echo "${{ inputs.cherry_pick_sha }}" | tr ',' '\n' | xargs -n1 echo 2>/dev/null | grep -v '^$')
+
+        if [ ${#SHA_LIST[@]} -eq 0 ]; then
+          echo "ℹ️ cherry_pick_sha was set but parsed to zero commits -- nothing to do"
+          exit 0
+        fi
+
+        echo "🍒 ${#SHA_LIST[@]} commit(s) to verify: ${SHA_LIST[*]}"
 
         # name -> checkout path, same 6 projects as the revision-override inputs above.
         declare -A PROJECT_PATHS=(
@@ -427,59 +439,83 @@ jobs:
           [cavli_linux_services]="OWRT.PRODUCT.2.1/apps_proc/owrt/src/cavli"
           [cavli_sdk_tools_linux]="OWRT.PRODUCT.2.1/apps_proc/owrt/src/cavli/cavli-sdk"
         )
+        # Tracks which repos we've already paid the un-shallow cost for, so a second
+        # SHA landing in the same repo doesn't redo it.
+        declare -A UNSHALLOWED
+        SUMMARY_LINES=()
 
-        echo "🔍 Looking for commit $SHA across all 6 projects (you only need the SHA -- this finds which repo it belongs to)..."
-        FOUND_NAME=""
-        FOUND_PATH=""
-        for name in "${!PROJECT_PATHS[@]}"; do
-          p="${PROJECT_PATHS[$name]}"
-          echo "  checking $name ($p)..."
-          # Each checkout's "origin" remote already points at the right GitHub repo
-          # (set up by repo sync from the manifest) -- no separate URL list needed.
-          # GitHub supports fetching an arbitrary reachable SHA1 directly, not just
-          # named refs, so this either succeeds (found it) or fails cleanly (not here).
-          if git -C "$p" fetch origin "$SHA" --depth=1 2>/dev/null; then
-            echo "  ✅ found in $name"
-            FOUND_NAME="$name"
-            FOUND_PATH="$p"
-            break
+        for SHA in "${SHA_LIST[@]}"; do
+          echo ""
+          echo "════════════════════════════════════════════════════════════"
+          echo "🔍 Looking for commit $SHA across all 6 projects (you only need the SHA -- this finds which repo it belongs to)..."
+          FOUND_NAME=""
+          FOUND_PATH=""
+          for name in "${!PROJECT_PATHS[@]}"; do
+            p="${PROJECT_PATHS[$name]}"
+            echo "  checking $name ($p)..."
+            # Each checkout's "origin" remote already points at the right GitHub repo
+            # (set up by repo sync from the manifest) -- no separate URL list needed.
+            # GitHub supports fetching an arbitrary reachable SHA1 directly, not just
+            # named refs, so this either succeeds (found it) or fails cleanly (not here).
+            if git -C "$p" fetch origin "$SHA" --depth=1 2>/dev/null; then
+              echo "  ✅ found in $name"
+              FOUND_NAME="$name"
+              FOUND_PATH="$p"
+              break
+            fi
+          done
+
+          if [ -z "$FOUND_NAME" ]; then
+            echo "💥 Commit $SHA not found in any of the 6 projects -- wrong SHA, or it was never pushed to that repo's remote"
+            exit 1
           fi
+
+          # repo sync only ever does --depth=1, and the detection fetch above used
+          # --depth=1 too (kept cheap since 5 of 6 checks are normally misses) -- so at
+          # this point neither the local HEAD nor the just-fetched $SHA has its parent
+          # commit available locally. cherry-pick's 3-way merge needs that parent to
+          # diff against, or every file the commit touches looks like a fabricated
+          # "add/add" conflict instead of a real one (confirmed the hard way: this
+          # exact SHA cherry-picks cleanly by hand with full history, but failed here
+          # with a bogus add/add conflict on owrt/owrt-qti-conf/set_openwrt_env.sh).
+          # Get full history for this ONE project only, once -- the other repos (and
+          # this one, on a 2nd SHA landing here) stay/are already unshallowed, so this
+          # doesn't slow down a cherry-pick-free run at all.
+          if [ -z "${UNSHALLOWED[$FOUND_NAME]:-}" ]; then
+            echo "📥 Un-shallowing $FOUND_NAME (need the picked commit's parent for a real 3-way merge)..."
+            if [ "$(git -C "$FOUND_PATH" rev-parse --is-shallow-repository)" = "true" ]; then
+              git -C "$FOUND_PATH" fetch --unshallow origin "$SHA"
+            else
+              git -C "$FOUND_PATH" fetch origin "$SHA"
+            fi
+            UNSHALLOWED[$FOUND_NAME]=1
+          else
+            # Already unshallowed from an earlier SHA in this same loop -- still need
+            # to actually fetch THIS SHA's object into the now-complete history.
+            git -C "$FOUND_PATH" fetch origin "$SHA"
+          fi
+
+          echo ""
+          echo "🍒 Cherry-picking $SHA onto ${FOUND_NAME}'s current checkout (branch: $(git -C "$FOUND_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached))"
+          if ! git -C "$FOUND_PATH" cherry-pick FETCH_HEAD; then
+            echo "💥 Cherry-pick failed (conflict) -- aborting cleanly instead of leaving a half-applied tree"
+            git -C "$FOUND_PATH" cherry-pick --abort || true
+            exit 1
+          fi
+
+          echo "✅ Cherry-pick applied to $FOUND_NAME (local only to this runner, never pushed anywhere)"
+          SUMMARY_LINES+=("${SHA:0:10} -> ${FOUND_NAME}")
         done
 
-        if [ -z "$FOUND_NAME" ]; then
-          echo "💥 Commit $SHA not found in any of the 6 projects -- wrong SHA, or it was never pushed to that repo's remote"
-          exit 1
-        fi
-
-        # repo sync only ever does --depth=1, and the detection fetch above used
-        # --depth=1 too (kept cheap since 5 of 6 checks are normally misses) -- so at
-        # this point neither the local HEAD nor the just-fetched $SHA has its parent
-        # commit available locally. cherry-pick's 3-way merge needs that parent to
-        # diff against, or every file the commit touches looks like a fabricated
-        # "add/add" conflict instead of a real one (confirmed the hard way: this
-        # exact SHA cherry-picks cleanly by hand with full history, see the
-        # dev/build-speedup branch, but failed here with a bogus add/add conflict on
-        # owrt/owrt-qti-conf/set_openwrt_env.sh). Get full history for this ONE
-        # project only -- the other 5 stay shallow, so this doesn't slow down a
-        # cherry-pick-free run at all.
-        echo "📥 Un-shallowing $FOUND_NAME (need the picked commit's parent for a real 3-way merge)..."
-        if [ "$(git -C "$FOUND_PATH" rev-parse --is-shallow-repository)" = "true" ]; then
-          git -C "$FOUND_PATH" fetch --unshallow origin "$SHA"
-        else
-          git -C "$FOUND_PATH" fetch origin "$SHA"
-        fi
-
         echo ""
-        echo "🍒 Cherry-picking $SHA onto ${FOUND_NAME}'s current checkout (branch: $(git -C "$FOUND_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached))"
-        if ! git -C "$FOUND_PATH" cherry-pick FETCH_HEAD; then
-          echo "💥 Cherry-pick failed (conflict) -- aborting cleanly instead of leaving a half-applied tree"
-          git -C "$FOUND_PATH" cherry-pick --abort || true
-          exit 1
-        fi
-
-        echo "✅ Cherry-pick applied to $FOUND_NAME (local only to this runner, never pushed anywhere)"
-        echo "CHERRY_PICK_REPO=$FOUND_NAME" >> $GITHUB_ENV
-        echo "CHERRY_PICK_SHA=$SHA" >> $GITHUB_ENV
+        echo "🍒 All ${#SHA_LIST[@]} commit(s) applied:"
+        printf '  %s\n' "${SUMMARY_LINES[@]}"
+        # Multi-line env var: https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/workflow-commands-for-github-actions#multiline-strings
+        {
+          echo "CHERRY_PICK_SUMMARY<<EOF_CHERRY_SUMMARY"
+          printf '%s\n' "${SUMMARY_LINES[@]}"
+          echo "EOF_CHERRY_SUMMARY"
+        } >> $GITHUB_ENV
 
     # Step 4: Verify All Repositories
     - name: 🔍 Verify Repository Structure
@@ -562,8 +598,9 @@ jobs:
         echo "Build Date: $(date)" >> build_info.txt
         echo "Triggered by: ${{ github.actor }}" >> build_info.txt
         echo "Build Type: Clean Build (Full Clone)" >> build_info.txt
-        if [ -n "${{ env.CHERRY_PICK_REPO }}" ]; then
-          echo "Cherry-picked: ${{ env.CHERRY_PICK_SHA }} onto ${{ env.CHERRY_PICK_REPO }}" >> build_info.txt
+        if [ -n "${{ env.CHERRY_PICK_SUMMARY }}" ]; then
+          echo "Cherry-picked:" >> build_info.txt
+          echo "${{ env.CHERRY_PICK_SUMMARY }}" | sed 's/^/  - /' >> build_info.txt
         fi
         echo "" >> build_info.txt
         echo "Software Version Information:" >> build_info.txt
@@ -1102,8 +1139,9 @@ jobs:
         {
           echo "# 🚀 Build Results"
           echo ""
-          if [ -n "${{ env.CHERRY_PICK_REPO }}" ]; then
-            echo "🍒 **Cherry-picked:** \`${{ env.CHERRY_PICK_SHA }}\` onto **${{ env.CHERRY_PICK_REPO }}**"
+          if [ -n "${{ env.CHERRY_PICK_SUMMARY }}" ]; then
+            echo "🍒 **Cherry-picked:**"
+            echo "${{ env.CHERRY_PICK_SUMMARY }}" | sed 's/^/- `/; s/ -> / onto **/; s/$/**/'
             echo ""
           fi
           echo "## 📥 Downloads"

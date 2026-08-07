@@ -4,11 +4,14 @@ name: 🔬 Build Verify
 # config exactly) plus two things Build Release doesn't have:
 #   - any of the 6 revision inputs can be pointed at a dev/test branch to try
 #     it before it's "release" material
-#   - cherry_pick_sha: give it a single commit SHA and it auto-detects which
-#     of the 6 projects that commit belongs to, then cherry-picks it onto
-#     that project's checkout (local to the runner, never pushed anywhere) --
-#     for testing "does this one commit still build cleanly on top of the
-#     release branch" without creating a throwaway branch by hand first.
+#   - cherry_pick_sha: give it one or more commit SHAs (comma and/or
+#     newline-separated) and it auto-detects which of the 6 projects each
+#     commit belongs to, then cherry-picks them onto their respective
+#     project checkouts (local to the runner, never pushed anywhere), in the
+#     order given -- for testing "do these commits still build cleanly on
+#     top of the release branch" without creating a throwaway branch by
+#     hand first. Multiple commits landing on the same project apply in
+#     order (matters if a later one depends on an earlier one).
 # Never publishes to Google Drive (see _build-common.yaml's publish_release
 # input) -- test builds shouldn't clutter the shared release folder.
 on:
@@ -68,7 +71,7 @@ on:
         type: string
         default: ''
       cherry_pick_sha:
-        description: 'Commit SHA to cherry-pick onto its release branch (blank = skip). Just the SHA -- which of the 6 repos it belongs to is auto-detected.'
+        description: 'Commit SHA(s) to cherry-pick, comma/newline-separated (blank = skip). Just the SHAs -- which repo each belongs to is auto-detected.'
         required: false
         type: string
         default: ''
