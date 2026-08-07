@@ -66,12 +66,12 @@ on:
         required: false
         default: true
 
-# Same workflow + same branch/ref can't have two runs in flight at once -- a repeat
-# dispatch (accidental double-click, retry after a transient API error, etc.) queues
-# behind the current run instead of racing it as a separate duplicate run.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+# No concurrency limit here anymore -- it used to serialize same-workflow/same-ref
+# runs (see build-release.yaml, which still does this: only one "the" release build
+# should be in flight at a time), but that also meant two Build Verify dispatches
+# testing two unrelated changes queued behind each other instead of actually running
+# in parallel on separate runners. Verify runs are inherently independent (different
+# cherry-pick targets, different branches) so let them race freely.
 
 # Environment variables
 env:
