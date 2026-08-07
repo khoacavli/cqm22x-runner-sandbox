@@ -28,6 +28,35 @@ on:
         description: 'RELEASE_TAG override -- manifest tag/branch (blank = use meta_release.txt)'
         required: false
         type: string
+      # The 6 inputs below override the per-project <project revision="..."/> pins in
+      # cqm22x-manifests' chipcode-cqm22x-3-qcom-refs.xml -- i.e. which branch/tag/commit
+      # repo sync actually checks out for each repo. Previously the only way to test a
+      # branch other than the pinned one was to hand-edit that XML in cqm22x-manifests.
+      # Blank = keep the manifest's own pin, unchanged (same as today's default behavior).
+      app_proc_revision:
+        description: 'cqm22x-apps-proc revision override (branch/tag/commit; blank = keep manifest pin)'
+        required: false
+        type: string
+      modem_proc_revision:
+        description: 'cqm22x-modem-proc revision override (blank = keep manifest pin)'
+        required: false
+        type: string
+      chipcode_revision:
+        description: 'cqm22x-chipcode revision override (blank = keep manifest pin)'
+        required: false
+        type: string
+      build_scripts_revision:
+        description: 'cqm22x-build-scripts revision override (blank = keep manifest pin)'
+        required: false
+        type: string
+      cavli_services_revision:
+        description: 'cavli_linux_services revision override (blank = keep manifest pin)'
+        required: false
+        type: string
+      cavli_sdk_revision:
+        description: 'cavli_sdk_tools_linux revision override (blank = keep manifest pin)'
+        required: false
+        type: string
 
 # Same workflow + same branch/ref can't have two runs in flight at once -- a repeat
 # dispatch (accidental double-click, retry after a transient API error, etc.) queues
@@ -262,6 +291,49 @@ jobs:
         fi
         # Create a local branch so repo init can reference it (avoids detached HEAD issue)
         git checkout -B repo-manifest-branch
+
+        # Apply per-project revision overrides from the workflow_dispatch inputs (UI),
+        # instead of requiring a hand-edit of chipcode-cqm22x-3-qcom-refs.xml in
+        # cqm22x-manifests for a one-off test of a different branch/tag/commit. Blank
+        # input = leave that project's <project revision="..."/> exactly as pinned in
+        # the manifest (today's default behavior, unchanged).
+        MANIFEST_FILE_TO_PATCH="$MANIFESTS_CLONE/chipcode-cqm22x-3-qcom-refs.xml"
+        # NOTE: the heredoc body below is indented 8 spaces so it stays inside this
+        # YAML block scalar (`run: |`), then the leading 8 spaces are stripped by
+        # sed before reaching python3 -- Python requires top-level statements to
+        # start at column 0, which plain YAML indentation would otherwise violate.
+        sed 's/^        //' <<'PYEOF' | python3 - "$MANIFEST_FILE_TO_PATCH"
+        import re
+        import sys
+
+        path = sys.argv[1]
+        overrides = {
+            "cqm22x-apps-proc": """${{ github.event.inputs.app_proc_revision }}""",
+            "cqm22x-modem-proc": """${{ github.event.inputs.modem_proc_revision }}""",
+            "cqm22x-chipcode": """${{ github.event.inputs.chipcode_revision }}""",
+            "cqm22x-build-scripts": """${{ github.event.inputs.build_scripts_revision }}""",
+            "cavli_linux_services": """${{ github.event.inputs.cavli_services_revision }}""",
+            "cavli_sdk_tools_linux": """${{ github.event.inputs.cavli_sdk_revision }}""",
+        }
+
+        with open(path) as f:
+            content = f.read()
+
+        for name, revision in overrides.items():
+            revision = revision.strip()
+            if not revision:
+                continue
+            pattern = re.compile(r'(<project\s+name="%s"[^>]*?revision=")[^"]*(")' % re.escape(name))
+            content, n = pattern.subn(lambda m, r=revision: m.group(1) + r + m.group(2), content)
+            if n == 0:
+                print(f"⚠️ WARNING: project '{name}' not found in manifest -- override ignored", file=sys.stderr)
+            else:
+                print(f"🎛️ Overriding {name} revision -> {revision}")
+
+        with open(path, "w") as f:
+            f.write(content)
+        PYEOF
+
         cd ${{ env.WORKSPACE_ROOT }}
 
         # .repo/ is normally kept across runs (see Clean Workspace step), so this is usually
