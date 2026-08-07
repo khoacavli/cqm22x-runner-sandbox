@@ -451,6 +451,24 @@ jobs:
           exit 1
         fi
 
+        # repo sync only ever does --depth=1, and the detection fetch above used
+        # --depth=1 too (kept cheap since 5 of 6 checks are normally misses) -- so at
+        # this point neither the local HEAD nor the just-fetched $SHA has its parent
+        # commit available locally. cherry-pick's 3-way merge needs that parent to
+        # diff against, or every file the commit touches looks like a fabricated
+        # "add/add" conflict instead of a real one (confirmed the hard way: this
+        # exact SHA cherry-picks cleanly by hand with full history, see the
+        # dev/build-speedup branch, but failed here with a bogus add/add conflict on
+        # owrt/owrt-qti-conf/set_openwrt_env.sh). Get full history for this ONE
+        # project only -- the other 5 stay shallow, so this doesn't slow down a
+        # cherry-pick-free run at all.
+        echo "📥 Un-shallowing $FOUND_NAME (need the picked commit's parent for a real 3-way merge)..."
+        if [ "$(git -C "$FOUND_PATH" rev-parse --is-shallow-repository)" = "true" ]; then
+          git -C "$FOUND_PATH" fetch --unshallow origin "$SHA"
+        else
+          git -C "$FOUND_PATH" fetch origin "$SHA"
+        fi
+
         echo ""
         echo "🍒 Cherry-picking $SHA onto ${FOUND_NAME}'s current checkout (branch: $(git -C "$FOUND_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached))"
         if ! git -C "$FOUND_PATH" cherry-pick FETCH_HEAD; then
