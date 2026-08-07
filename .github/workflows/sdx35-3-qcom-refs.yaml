@@ -298,11 +298,16 @@ jobs:
         # input = leave that project's <project revision="..."/> exactly as pinned in
         # the manifest (today's default behavior, unchanged).
         MANIFEST_FILE_TO_PATCH="$MANIFESTS_CLONE/chipcode-cqm22x-3-qcom-refs.xml"
-        # NOTE: the heredoc body below is indented 8 spaces so it stays inside this
-        # YAML block scalar (`run: |`), then the leading 8 spaces are stripped by
-        # sed before reaching python3 -- Python requires top-level statements to
-        # start at column 0, which plain YAML indentation would otherwise violate.
-        sed 's/^        //' <<'PYEOF' | python3 - "$MANIFEST_FILE_TO_PATCH"
+        # NOTE: the heredoc body below is written at this step's 8-space baseline
+        # (like every other line in this run: | block) purely so the YAML file
+        # itself stays valid -- YAML's block-scalar folding strips that common
+        # 8-space baseline before bash ever sees this script, so what bash (and
+        # then python3) actually receives is the heredoc body dedented back to
+        # column 0, with each line's *relative* indentation beyond the baseline
+        # preserved intact. Do NOT pipe through sed to strip it again -- that
+        # double-strips already-dedented lines and corrupts relative indentation
+        # (confirmed the hard way: broke `if not revision: / continue`).
+        python3 - "$MANIFEST_FILE_TO_PATCH" <<'PYEOF'
         import re
         import sys
 
