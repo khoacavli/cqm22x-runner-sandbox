@@ -691,6 +691,16 @@ jobs:
               echo "💥 Build failed after $MAX_ATTEMPTS attempts"
               exit $EXIT_CODE
             else
+              # build.sh truncates build_logs/*.log and timing.log fresh on every
+              # invocation, so without this a failed attempt's logs (the ones that
+              # actually explain the failure) are gone the moment the retry starts
+              # writing over them -- confirmed the hard way in run 31193162213,
+              # where attempt 1's "app" failure was unrecoverable because attempt 2
+              # had already overwritten build_approc.log by the time anyone looked.
+              if [ -d build_logs ]; then
+                mv build_logs "build_logs.attempt${ATTEMPT}"
+                echo "📦 Preserved attempt ${ATTEMPT}'s logs -> build_logs.attempt${ATTEMPT}/"
+              fi
               echo "🔄 Retrying build..."
               ATTEMPT=$((ATTEMPT + 1))
               sleep 5
@@ -706,7 +716,12 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: build-logs-${{ github.run_id }}
-        path: ${{ env.CHIPCODE_ROOT }}/build_logs/
+        # build_logs/ is the last (successful, or final failed) attempt; any earlier
+        # failed attempt's logs were preserved under build_logs.attemptN/ before the
+        # retry overwrote them -- see the retry loop above.
+        path: |
+          ${{ env.CHIPCODE_ROOT }}/build_logs/
+          ${{ env.CHIPCODE_ROOT }}/build_logs.attempt*/
         if-no-files-found: warn
         retention-days: 14
 
