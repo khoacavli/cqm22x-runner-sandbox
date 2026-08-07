@@ -28,10 +28,6 @@ on:
         description: 'RELEASE_TAG override -- manifest tag/branch (blank = use meta_release.txt)'
         required: false
         type: string
-      app_branch:
-        description: 'APP_BRANCH override -- cqm22x-apps-proc branch, e.g. a test/* branch (blank = use meta_release.txt)'
-        required: false
-        type: string
 
 # Same workflow + same branch/ref can't have two runs in flight at once -- a repeat
 # dispatch (accidental double-click, retry after a transient API error, etc.) queues
@@ -122,7 +118,6 @@ jobs:
             [SOFTWARE_VERSION]="${{ github.event.inputs.software_version }}"
             [MODEM_VERSION]="${{ github.event.inputs.modem_version }}"
             [RELEASE_TAG]="${{ github.event.inputs.release_tag }}"
-            [APP_BRANCH]="${{ github.event.inputs.app_branch }}"
           )
           for key in "${!INPUT_OVERRIDES[@]}"; do
             value="${INPUT_OVERRIDES[$key]}"
