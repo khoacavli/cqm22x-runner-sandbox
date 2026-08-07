@@ -223,7 +223,7 @@ jobs:
       run: |
         echo "Cleaning workspace..."
         cd ${{ env.WORKSPACE_ROOT }}
-        
+
         # Remove existing chipcode directory if it exists -- every build still starts from
         # a genuinely clean working tree (no leftover build_dir/staging_dir/.config cruft).
         if [ -d "chipcode" ]; then
@@ -319,7 +319,7 @@ jobs:
         echo "└── 📁 apps_proc/owrt/src/"
         echo "    ├── 🔧 Cavli Services: $(ls -d OWRT.PRODUCT.2.1/apps_proc/owrt/src/cavli 2>/dev/null && echo '✅ OK' || echo '❌ MISSING')"
         echo "    └── 🔧 Cavli SDK: $(ls -d OWRT.PRODUCT.2.1/apps_proc/owrt/src/cavli/cavli-sdk 2>/dev/null && echo '✅ OK' || echo '❌ MISSING')"
-        
+
     # Step 5: Prepare Version Info
     # Actual file stamping (VERSION_MAJOR/MINOR/PATCH, CAVLI_FW_VER_I, CAVLI_MODEL_I) now
     # happens inside build.sh itself (via -v/-w/-M), see "Build All Modules" step below.
@@ -599,6 +599,24 @@ jobs:
             fi
           fi
         done
+
+    # Snapshot the just-built tool/toolchain (build_dir/host, staging_dir/host,
+    # toolchain-*, dl/) to /pkg/openwrt-prebuilt-backup so the NEXT run's configure()
+    # restores from a fresh cache instead of last time's. This is what actually keeps
+    # the cache useful over time -- configure() (in set_openwrt_env.sh) already
+    # auto-restores from this path whenever build_dir/staging_dir come up empty, which
+    # is every run since Clean Workspace wipes chipcode/ each time -- that restore path
+    # was already firing every run (confirmed in run 31116287122's logs), just against
+    # a cache that's been stuck at whenever it was last manually captured (2026-07-21).
+    # Only run this after a real success, so a broken/partial build never gets cached
+    # as if it were good.
+    - name: 🗄️ Refresh toolchain prebuilt cache
+      if: success()
+      timeout-minutes: 20
+      run: |
+        cd "${{ env.CHIPCODE_ROOT }}/OWRT.PRODUCT.2.1/apps_proc/owrt"
+        source owrt-qti-conf/set_openwrt_env.sh
+        prebuilt_cache_backup
 
     # Upload build logs (per-module logs + timing.log) so they can be downloaded from the
     # Actions run page, regardless of whether the build step above succeeded or failed.
