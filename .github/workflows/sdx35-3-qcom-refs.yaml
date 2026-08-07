@@ -339,6 +339,22 @@ jobs:
             f.write(content)
         PYEOF
 
+        # `repo init -u "$MANIFESTS_CLONE"` clones/fetches this path as a git remote,
+        # which only sees committed history -- NOT the working-tree edit the Python
+        # block above just made. Without this commit, repo silently ignores the
+        # override and syncs whatever revision was already committed (confirmed the
+        # hard way: run 31165277014 patched the file on disk correctly but repo
+        # still checked out the old sdx35-3-pinned commit). Commit is local-only,
+        # never pushed anywhere -- $MANIFESTS_CLONE is a disposable per-run clone.
+        if ! git diff --quiet; then
+          git config user.email "ci@cavli-wireless.local"
+          git config user.name "CI Revision Override"
+          git commit -am "CI: apply workflow_dispatch revision overrides (local-only, not pushed)"
+          echo "✅ Committed revision overrides to local manifest clone"
+        else
+          echo "ℹ️ No revision overrides requested -- manifest unchanged"
+        fi
+
         cd ${{ env.WORKSPACE_ROOT }}
 
         # .repo/ is normally kept across runs (see Clean Workspace step), so this is usually
