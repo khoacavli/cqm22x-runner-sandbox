@@ -1,78 +1,24 @@
 name: Build Verify
 
-# Same defaults as Build Release (a plain "Run workflow" reproduces the release
-# config exactly) plus two things Build Release doesn't have:
-#   - any of the 6 revision inputs can be pointed at a dev/test branch to try
-#     it before it's "release" material
-#   - cherry_pick_sha: give it one or more commit SHAs (comma and/or
-#     newline-separated) and it auto-detects which of the 6 projects each
-#     commit belongs to, then cherry-picks them onto their respective
-#     project checkouts (local to the runner, never pushed anywhere), in the
-#     order given -- for testing "do these commits still build cleanly on
-#     top of the release branch" without creating a throwaway branch by
-#     hand first. Multiple commits landing on the same project apply in
-#     order (matters if a later one depends on an earlier one).
-# Also publishes to Google Drive (same share/khoa/test sandbox folder as Build
-# Release) -- the point of verifying a change is being able to flash + test it
-# on real hardware, which means the package actually has to be downloadable.
+# Same as Build Release (same fixed release branches, same everything) except
+# one thing: cherry_pick_sha. Give it one or more commit SHAs (comma and/or
+# newline-separated) and it auto-detects which of the 6 projects each commit
+# belongs to, then cherry-picks them onto their respective project checkouts
+# (local to the runner, never pushed anywhere), in the order given -- for
+# testing "do these commits still build cleanly on top of the release branch"
+# without creating a throwaway branch by hand first. Multiple commits landing
+# on the same project apply in order (matters if a later one depends on an
+# earlier one).
+#
+# Everything else that Build Release exposes as a UI input (profile/version/
+# tag overrides, per-project revision overrides) is intentionally NOT here --
+# kept fixed to the same release defaults under the hood. Trim this down
+# further, or add specific overrides back, as actual need comes up.
 on:
   workflow_dispatch:
     inputs:
-      profile_build:
-        description: 'PROFILE_BUILD override (blank = use meta_release.txt)'
-        required: false
-        type: choice
-        default: ''
-        options:
-          - ''
-          - MBB-CAV
-          - MBB
-          - M2-CAV
-          - M2
-      software_version:
-        description: 'SOFTWARE_VERSION override (blank = use meta_release.txt)'
-        required: false
-        type: string
-      modem_version:
-        description: 'MODEM_VERSION override (blank = use meta_release.txt)'
-        required: false
-        type: string
-      release_tag:
-        description: 'RELEASE_TAG override -- cqm22x-manifests tag/branch (blank = use meta_release.txt)'
-        required: false
-        type: string
-      app_proc_revision:
-        description: 'cqm22x-apps-proc revision (default = release branch; point at a dev branch to test it)'
-        required: false
-        type: string
-        default: 'cavli_sdx35_iot_le_1_0'
-      modem_proc_revision:
-        description: 'cqm22x-modem-proc revision (default = release branch)'
-        required: false
-        type: string
-        default: 'cavli_sdx35_iot_le_1_0_r00035.1_1.164485.2'
-      chipcode_revision:
-        description: 'cqm22x-chipcode revision (default = release branch)'
-        required: false
-        type: string
-        default: 'cavli_sdx35_iot_le_1_0'
-      build_scripts_revision:
-        description: 'cqm22x-build-scripts revision (default = release branch)'
-        required: false
-        type: string
-        default: 'cavli_sdx35_iot_le_1_0'
-      cavli_services_revision:
-        description: 'cavli_linux_services revision (default = release branch)'
-        required: false
-        type: string
-        default: 'main'
-      cavli_sdk_revision:
-        description: 'cavli_sdk_tools_linux revision (blank = keep manifest''s pinned commit)'
-        required: false
-        type: string
-        default: ''
       cherry_pick_sha:
-        description: 'Commit SHA(s) to cherry-pick, comma/newline-separated (blank = skip). Just the SHAs -- which repo each belongs to is auto-detected.'
+        description: 'Commit SHA(s) to cherry-pick onto their release branch, comma/newline-separated. Just the SHAs -- which repo each belongs to is auto-detected.'
         required: false
         type: string
         default: ''
@@ -82,15 +28,10 @@ jobs:
     uses: ./.github/workflows/_build-common.yaml
     secrets: inherit
     with:
-      profile_build: ${{ inputs.profile_build }}
-      software_version: ${{ inputs.software_version }}
-      modem_version: ${{ inputs.modem_version }}
-      release_tag: ${{ inputs.release_tag }}
-      app_proc_revision: ${{ inputs.app_proc_revision }}
-      modem_proc_revision: ${{ inputs.modem_proc_revision }}
-      chipcode_revision: ${{ inputs.chipcode_revision }}
-      build_scripts_revision: ${{ inputs.build_scripts_revision }}
-      cavli_services_revision: ${{ inputs.cavli_services_revision }}
-      cavli_sdk_revision: ${{ inputs.cavli_sdk_revision }}
+      app_proc_revision: 'cavli_sdx35_iot_le_1_0'
+      modem_proc_revision: 'cavli_sdx35_iot_le_1_0_r00035.1_1.164485.2'
+      chipcode_revision: 'cavli_sdx35_iot_le_1_0'
+      build_scripts_revision: 'cavli_sdx35_iot_le_1_0'
+      cavli_services_revision: 'main'
       cherry_pick_sha: ${{ inputs.cherry_pick_sha }}
       publish_release: true
