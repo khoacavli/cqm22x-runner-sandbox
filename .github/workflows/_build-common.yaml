@@ -1192,40 +1192,51 @@ jobs:
           exit 1
         fi
 
-    # Step 14: Publish Build Summary -- one place to grab the Drive link + build
-    # logs and see how long each module took, right on the run page (no download
-    # needed). Runs even if an earlier step failed, so the logs link + timing
-    # chart are still available for debugging a broken run; the Drive link line
-    # only appears if that upload actually succeeded (DRIVE_LINK would be unset).
+    # Step 14: Publish Build Summary -- one place to grab the download link, the
+    # build log, and how long each module took, both right on the run page
+    # (GITHUB_STEP_SUMMARY) and pushed to Slack. Runs even if an earlier step
+    # failed, so the log link + timing are still there to debug a broken run;
+    # the Drive/log lines only appear when that step actually produced
+    # something (DRIVE_LINK/LOGS_ARTIFACT_ID would be unset otherwise). Slack
+    # and the step summary share one pass over timing.log instead of two.
     - name: Publish Build Summary
       if: always()
       run: |
+        STATUS="${{ job.status }}"
+        RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         LOGS_ARTIFACT_ID="${{ steps.upload_logs.outputs.artifact-id }}"
         LOGS_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${LOGS_ARTIFACT_ID}"
+        TIMING_LOG="${{ env.CHIPCODE_ROOT }}/build_logs/timing.log"
 
         {
-          echo "# 🚀 Build Results"
+          echo "# Build Results"
           echo ""
+          echo "Status: $STATUS"
           if [ -n "${{ env.CHERRY_PICK_SUMMARY }}" ]; then
-            echo "🍒 **Cherry-picked:**"
-            echo "${{ env.CHERRY_PICK_SUMMARY }}" | sed 's/^/- `/; s/ -> / onto **/; s/$/**/'
             echo ""
+            echo "Cherry-picked:"
+            echo "${{ env.CHERRY_PICK_SUMMARY }}" | sed 's/^/- `/; s/ -> / onto **/; s/$/**/'
           fi
-          echo "## 📥 Downloads"
+          echo ""
+          echo "## Downloads"
           echo ""
           if [ -n "${{ env.DRIVE_LINK }}" ]; then
-            echo "- ☁️ **Release package (Google Drive):** [${{ env.DRIVE_FOLDER }}](${{ env.DRIVE_LINK }})"
+            echo "- Build package: [${{ env.DRIVE_FOLDER }}](${{ env.DRIVE_LINK }})"
           fi
           if [ -n "$LOGS_ARTIFACT_ID" ]; then
-            echo "- 📄 **Build logs** (per-module logs + timing_chart.html): [download]($LOGS_URL)"
+            echo "- Build logs (per-module logs + timing_chart.html): [download]($LOGS_URL)"
           fi
           echo ""
         } >> "$GITHUB_STEP_SUMMARY"
 
-        TIMING_LOG="${{ env.CHIPCODE_ROOT }}/build_logs/timing.log"
+        # Also builds SLACK_TIMING (plain "name: Ns" lines) alongside the step
+        # summary's table -- process substitution (not a pipe) so the loop runs
+        # in *this* shell and SLACK_TIMING survives past it, not a subshell.
+        SLACK_TIMING=""
+        TOTAL_DUR=""
         if [ -f "$TIMING_LOG" ]; then
           {
-            echo "## ⏱️ Module Timing"
+            echo "## Module Timing"
             echo ""
             echo "| Module | Duration | |"
             echo "|---|---|---|"
@@ -1234,7 +1245,7 @@ jobs:
           MAXDUR=$(grep -v '\] TOTAL ' "$TIMING_LOG" | sed -n 's/.*duration=\([0-9]*\)s.*/\1/p' | sort -n | tail -1)
           [ -z "$MAXDUR" ] && MAXDUR=1
 
-          grep -v '\] TOTAL ' "$TIMING_LOG" | while IFS= read -r LINE; do
+          while IFS= read -r LINE; do
             # recovery's line (written by the SPIN_CHAIN_CMD path, not log_task) has no
             # "start=+Ns" field -- match on the first space-run after the name instead of
             # requiring "start=" specifically, so recovery isn't silently dropped from the table.
@@ -1243,10 +1254,12 @@ jobs:
             EXIT=$(echo "$LINE" | sed -n 's/.*exit=\([0-9-]*\).*/\1/p')
             [ -z "$NAME" ] && continue
             BARLEN=$(awk -v d="$DUR" -v m="$MAXDUR" 'BEGIN{n=int(d/m*30); if(n<1)n=1; print n}')
-            BAR=$(printf '█%.0s' $(seq 1 "$BARLEN"))
-            MARK=""; [ "$EXIT" != "0" ] && MARK=" ❌"
+            BAR=$(printf '#%.0s' $(seq 1 "$BARLEN"))
+            MARK=""; [ "$EXIT" != "0" ] && MARK=" (failed)"
             echo "| ${NAME}${MARK} | ${DUR}s | \`${BAR}\` |" >> "$GITHUB_STEP_SUMMARY"
-          done
+            SLACK_TIMING="$SLACK_TIMING
+        ${NAME}: ${DUR}s${MARK}"
+          done < <(grep -v '\] TOTAL ' "$TIMING_LOG")
 
           TOTAL_DUR=$(grep '\] TOTAL ' "$TIMING_LOG" | sed -n 's/.*duration=\([0-9]*\)s.*/\1/p')
           if [ -n "$TOTAL_DUR" ]; then
@@ -1254,42 +1267,22 @@ jobs:
             echo "**Total internal build time:** ${TOTAL_DUR}s" >> "$GITHUB_STEP_SUMMARY"
           fi
         else
-          echo "ℹ️ No timing.log found (build_logs/ missing), skipping timing chart" >> "$GITHUB_STEP_SUMMARY"
+          echo "No timing.log found (build_logs/ missing), skipping timing chart" >> "$GITHUB_STEP_SUMMARY"
         fi
 
-    # Slack notification -- always runs (success or failure), so a broken build
-    # gets flagged just as loudly as a good one. No-ops quietly if the
-    # SLACK_WEBHOOK_URL repo secret isn't set yet, so this is safe to ship before
-    # that secret exists. job.status reflects every step's outcome so far, which
-    # by this point (last step) is the job's real final status.
-    - name: Notify Slack
-      if: always()
-      run: |
+        # ---- Slack -- always runs (success or failure), so a broken build gets
+        # flagged just as loudly as a good one. No-ops quietly if the
+        # SLACK_WEBHOOK_URL repo secret isn't set. job.status reflects every
+        # step's outcome so far, which by this point (last step) is final. ----
         WEBHOOK="${{ secrets.SLACK_WEBHOOK_URL }}"
         if [ -z "$WEBHOOK" ]; then
-          echo "ℹ️ SLACK_WEBHOOK_URL secret not set -- skipping Slack notification"
+          echo "SLACK_WEBHOOK_URL secret not set -- skipping Slack notification"
           exit 0
         fi
 
-        STATUS="${{ job.status }}"
-        case "$STATUS" in
-          success) EMOJI=":white_check_mark:";;
-          failure) EMOJI=":x:";;
-          cancelled) EMOJI=":no_entry_sign:";;
-          *) EMOJI=":grey_question:";;
-        esac
-
-        RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-        TIMING_LOG="${{ env.CHIPCODE_ROOT }}/build_logs/timing.log"
-        TOTAL_DUR=""
-        [ -f "$TIMING_LOG" ] && TOTAL_DUR=$(grep '\] TOTAL ' "$TIMING_LOG" | sed -n 's/.*duration=\([0-9]*\)s.*/\1/p')
-
-        TEXT="$EMOJI *${{ github.workflow }}* -- $STATUS"
+        TEXT="*${{ github.workflow }}* -- $STATUS"
         TEXT="$TEXT
         <$RUN_URL|View run> -- triggered by ${{ github.actor }}"
-        [ -n "$TOTAL_DUR" ] && TEXT="$TEXT
-        Build time: ${TOTAL_DUR}s"
         if [ -n "${{ env.CHERRY_PICK_SUMMARY }}" ]; then
           CP=$(echo "${{ env.CHERRY_PICK_SUMMARY }}" | tr '\n' ';' | sed 's/;$//; s/;/, /g')
           TEXT="$TEXT
@@ -1297,7 +1290,17 @@ jobs:
         fi
         if [ -n "${{ env.DRIVE_LINK }}" ]; then
           TEXT="$TEXT
-        <${{ env.DRIVE_LINK }}|Release package>"
+        Download build: <${{ env.DRIVE_LINK }}|release package>"
+        fi
+        if [ -n "$LOGS_ARTIFACT_ID" ]; then
+          TEXT="$TEXT
+        Build log: <$LOGS_URL|download>"
+        fi
+        if [ -n "$SLACK_TIMING" ]; then
+          TEXT="$TEXT
+        Module timing:$SLACK_TIMING"
+          [ -n "$TOTAL_DUR" ] && TEXT="$TEXT
+        Total: ${TOTAL_DUR}s"
         fi
 
         # python3 for JSON-encoding, not manual quoting -- TEXT has embedded
@@ -1306,7 +1309,7 @@ jobs:
         PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$TEXT")
         HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$WEBHOOK")
         if [ "$HTTP_CODE" = "200" ]; then
-          echo "✅ Slack notification sent"
+          echo "Slack notification sent"
         else
-          echo "⚠️ Slack notification failed (HTTP $HTTP_CODE) -- not failing the build over this"
+          echo "Slack notification failed (HTTP $HTTP_CODE) -- not failing the build over this"
         fi
