@@ -1264,8 +1264,19 @@ jobs:
         cd ~/hwtest_run
         \$RCLONE copy "GGDrive:/$DRIVE_RUN_PATH" .
         tar xzf "$TAR_BASENAME"
+        # rclone/Drive doesn't preserve the executable bit (Drive isn't a
+        # POSIX filesystem) -- restore it after download, unlike scp which
+        # used to carry it over automatically.
+        chmod +x flash_2k.sh flash_4k.sh
+        # Capture run_tests.py's exit code instead of letting it FAIL under
+        # set -e -- otherwise a failing test skips the evidence upload below
+        # entirely, which is exactly the case debugging needs it most.
+        set +e
         python3 docs/automation/run_tests.py --level basic --evidence-dir test_evidence
+        TEST_EXIT=\$?
+        set -e
         \$RCLONE copy test_evidence "GGDrive:/$DRIVE_RUN_PATH/test_evidence"
+        exit \$TEST_EXIT
         REMOTE_EOF
         REMOTE_EXIT=$?
         set -e
