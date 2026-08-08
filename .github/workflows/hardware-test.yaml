@@ -26,11 +26,12 @@ jobs:
     runs-on: [self-hosted, cqm22x-test-runner]
     timeout-minutes: 25
     steps:
-      # Step 1: figure out which binaries archive to test, and grab
+      # Step 1: figure out which binaries archive to test, and pull it plus
       # flash_2k.sh + flash_4k.sh (same files the build pipeline generates --
       # static content, so whatever copies are currently sitting in the
-      # shared Drive folder are fine to reuse). Which one actually gets run
-      # is decided later, from the board's own reported NAND page size.
+      # shared Drive folder are fine to reuse) down to this runner. Which
+      # flash script actually gets run is decided later, from the board's
+      # own reported NAND page size.
       - name: Find Latest Release Binaries
         run: |
           RCLONE_BIN=/usr/bin/rclone
@@ -52,23 +53,16 @@ jobs:
           fi
           echo "Latest binaries archive on Drive: $LATEST"
 
-          DL_LINK=$("$RCLONE_BIN" --config "$RCLONE_CONF" link "GGDrive:/$DRIVE_DIR/$LATEST" 2>/dev/null)
-          if [ -z "$DL_LINK" ]; then
-            echo "Could not get a share link for $LATEST"
-            exit 1
-          fi
-          echo "Share link: $DL_LINK"
-
+          "$RCLONE_BIN" --config "$RCLONE_CONF" copy "GGDrive:/$DRIVE_DIR/$LATEST" . --progress
           "$RCLONE_BIN" --config "$RCLONE_CONF" copy "GGDrive:/$DRIVE_DIR/flash_2k.sh" . 2>/dev/null
           "$RCLONE_BIN" --config "$RCLONE_CONF" copy "GGDrive:/$DRIVE_DIR/flash_4k.sh" . 2>/dev/null
-          if [ ! -f flash_2k.sh ] || [ ! -f flash_4k.sh ]; then
-            echo "Could not fetch flash_2k.sh / flash_4k.sh from Drive:/$DRIVE_DIR"
+          if [ ! -f "$LATEST" ] || [ ! -f flash_2k.sh ] || [ ! -f flash_4k.sh ]; then
+            echo "Could not fetch $LATEST / flash_2k.sh / flash_4k.sh from Drive:/$DRIVE_DIR"
             exit 1
           fi
           chmod +x flash_2k.sh flash_4k.sh
 
           echo "BINARIES_NAME=$LATEST" >> $GITHUB_ENV
-          echo "BINARIES_DL_LINK=$DL_LINK" >> $GITHUB_ENV
 
       # Step 2: same self-healing Tailscale check as the build pipeline's hw
       # test step -- see _build-common.yaml for why this runner needs it
@@ -114,44 +108,50 @@ jobs:
       - name: Hardware Test (run_tests.py)
         timeout-minutes: 20
         run: |
-          RUN_DIR="hwtest/run-${{ github.run_id }}"
           LEVEL="${{ inputs.level }}"
+          RCLONE="rclone --config $HOME/rclone_fw_share.conf"
+          DRIVE_RUN_PATH="share/khoa/hwtest-ci/run-${{ github.run_id }}"
 
-          echo "Uploading flash_2k.sh + flash_4k.sh + test automation to test rig ($RUN_DIR)..."
-          ssh pi "mkdir -p ~/$RUN_DIR"
-          scp flash_2k.sh flash_4k.sh "pi:~/$RUN_DIR/"
-          scp -r "${{ env.DOCS_CHECKOUT }}" "pi:~/$RUN_DIR/docs"
+          # Everything crosses the Tailscale link via Drive, not scp -- this
+          # runner and the rig both have plain internet and rclone (with the
+          # same GGDrive: remote config on both sides), while the Tailscale
+          # hop is relayed through DERP (no direct UDP path out of this
+          # sandbox) and scp over it is slow even for small files.
+          echo "Uploading binaries + flash scripts + test automation to Drive ($DRIVE_RUN_PATH)..."
+          $RCLONE copy "$BINARIES_NAME" "GGDrive:/$DRIVE_RUN_PATH" --progress
+          $RCLONE copy flash_2k.sh "GGDrive:/$DRIVE_RUN_PATH" --progress
+          $RCLONE copy flash_4k.sh "GGDrive:/$DRIVE_RUN_PATH" --progress
+          $RCLONE copy "${{ env.DOCS_CHECKOUT }}" "GGDrive:/$DRIVE_RUN_PATH/docs" --progress
 
           echo "Running automation/run_tests.py --level $LEVEL on test rig (flock-serialized -- waits its turn if another job is using the board)..."
           set +e
           ssh pi "flock -w 1200 ~/hwtest/board.lock bash -s" > hw_test_output.log 2>&1 <<REMOTE_EOF
           set -e
-          cd ~/$RUN_DIR
-          shopt -s expand_aliases
-          source ~/ggdrive-tools/ggdrive_aliases.sh
-          download_ggdrive "$BINARIES_DL_LINK" "$BINARIES_NAME"
+          RCLONE="rclone --config \$HOME/rclone_fw_share.conf"
+          rm -rf ~/hwtest_run
+          mkdir -p ~/hwtest_run
+          cd ~/hwtest_run
+          \$RCLONE copy "GGDrive:/$DRIVE_RUN_PATH" .
           tar xzf "$BINARIES_NAME"
           python3 docs/automation/run_tests.py --level $LEVEL --evidence-dir test_evidence
+          \$RCLONE copy test_evidence "GGDrive:/$DRIVE_RUN_PATH/test_evidence"
           REMOTE_EOF
           REMOTE_EXIT=$?
           set -e
 
           cat hw_test_output.log
 
-          echo "Pulling test evidence back from the rig..."
-          # Plain "scp -r host:dir/." dest/ is rejected by modern (SFTP-based)
-          # scp with "error: unexpected filename: ." -- pull the directory
-          # itself instead (scp -r creates dest exactly, with source's
-          # contents, when dest doesn't already exist).
+          echo "Pulling test evidence back from Drive..."
           rm -rf hw_test_evidence
-          if scp -r "pi:~/$RUN_DIR/test_evidence" hw_test_evidence 2>&1; then
+          if $RCLONE copy "GGDrive:/$DRIVE_RUN_PATH/test_evidence" hw_test_evidence --progress; then
             echo "Evidence pulled to hw_test_evidence/"
           else
             echo "Could not pull evidence dir (test run may have failed before it was written)"
           fi
 
-          ssh pi "rm -rf ~/$RUN_DIR" || true
+          ssh pi "rm -rf ~/hwtest_run" || true
           rm -rf "${{ env.DOCS_CHECKOUT }}"
+          $RCLONE purge "GGDrive:/$DRIVE_RUN_PATH" 2>&1 || true
 
           # run_tests.py's own exit code convention: 0 only if every selected
           # test PASSED, 1 otherwise -- which test and why is in
