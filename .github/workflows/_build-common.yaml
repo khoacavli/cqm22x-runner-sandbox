@@ -1193,6 +1193,21 @@ jobs:
           echo "Tailscale link recovered"
         fi
 
+    # All hardware-test *logic* (NAND detection, flash, boot-check, pass/fail
+    # criteria) lives in cqm22x-docs, not here -- testcases/cases/TC-023.adoc
+    # documents it, automation/tc_023_fastboot_flash_boot_check.py implements
+    # it. This step's job is now just infra plumbing: get that script onto
+    # the rig and run it. Anyone can run the exact same script locally
+    # against the rig (see automation/README.adoc) -- this step doesn't do
+    # anything the docs repo doesn't already let you do by hand.
+    - name: Fetch Test Automation (cqm22x-docs)
+      if: success() && inputs.run_hw_test
+      timeout-minutes: 3
+      run: |
+        DOCS_CHECKOUT=$(mktemp -d)
+        git clone --depth 1 git@github.com:cavli-wireless/cqm22x-docs.git "$DOCS_CHECKOUT"
+        echo "DOCS_CHECKOUT=$DOCS_CHECKOUT" >> $GITHUB_ENV
+
     # Board NAND page size (2K vs 4K) is auto-detected from the board itself
     # (fastboot's "logical-block-size": 0x800 = 2K, 0x1000 = 4K -- confirmed
     # against the real rig board, which reports 0x800 and matches the
@@ -1200,7 +1215,7 @@ jobs:
     # files) rather than assumed, so this keeps working if a 4K board ever
     # joins the rig without needing a workflow edit. If the release build
     # doesn't actually contain a binaries_<variant>/ for whatever the board
-    # turns out to be (right now only binaries_2k gets built), this fails
+    # turns out to be (right now only binaries_2k gets built), TC-023 fails
     # loudly instead of silently flashing the wrong image set.
     #
     # The binaries archive (~130MB) travels via Google Drive, not scp over the
@@ -1209,11 +1224,8 @@ jobs:
     # of this sandbox) and scp-over-DERP took ~4 minutes for this file.
     # upload_ggdrive/download_ggdrive (~/ggdrive-tools/ggdrive_aliases.sh,
     # already installed on both this runner and the rig) do the same transfer
-    # in ~25s total. Only flash_2k.sh (a few hundred bytes) still goes by scp
-    # -- not worth a Drive round trip. Both alias functions need
-    # `shopt -s expand_aliases` + sourcing on their own line before use --
-    # bash only expands aliases defined earlier in the *same* script from the
-    # next line onward, not later on the line that defined them.
+    # in ~25s total. flash_2k.sh/flash_4k.sh (a few hundred bytes each) still
+    # go by scp -- not worth a Drive round trip.
     - name: Hardware Test (flash + boot check)
       if: success() && inputs.run_hw_test
       timeout-minutes: 20
@@ -1241,11 +1253,12 @@ jobs:
           exit 1
         fi
 
-        echo "Uploading flash_2k.sh + flash_4k.sh to test rig ($RUN_DIR)..."
+        echo "Uploading flash_2k.sh + flash_4k.sh + test automation script to test rig ($RUN_DIR)..."
         ssh pi "mkdir -p ~/$RUN_DIR"
         scp flash_2k.sh flash_4k.sh "pi:~/$RUN_DIR/"
+        scp -r "${{ env.DOCS_CHECKOUT }}/automation" "pi:~/$RUN_DIR/"
 
-        echo "Running flash + boot check on test rig (flock-serialized -- waits its turn if another job is using the board)..."
+        echo "Running TC-023 on test rig (flock-serialized -- waits its turn if another job is using the board)..."
         set +e
         ssh pi "flock -w 1200 ~/hwtest/board.lock bash -s" > hw_test_output.log 2>&1 <<REMOTE_EOF
         set -e
@@ -1254,82 +1267,29 @@ jobs:
         source ~/ggdrive-tools/ggdrive_aliases.sh
         download_ggdrive "$DL_LINK" "$TAR_BASENAME"
         tar xzf "$TAR_BASENAME"
-
-        DEV=\$(adb devices | awk 'NR>1 && \$2=="device"{print \$1; exit}')
-        if [ -n "\$DEV" ]; then
-          echo "Rebooting board \$DEV into fastboot..."
-          adb -s "\$DEV" reboot bootloader
-        else
-          echo "Board not visible via adb -- assuming it may already be in fastboot"
-        fi
-
-        FB_OK=0
-        for i in \$(seq 1 12); do
-          sleep 5
-          if fastboot devices | grep -q fastboot; then
-            FB_OK=1
-            break
-          fi
-        done
-        if [ "\$FB_OK" != "1" ]; then
-          echo "Board never showed up in fastboot mode"
-          exit 1
-        fi
-
-        echo "Detecting board NAND page size..."
-        LBS=\$(fastboot getvar all 2>&1 | grep -oP 'logical-block-size:\s*\K0x[0-9a-fA-F]+' | head -1)
-        case "\$LBS" in
-          0x800) VARIANT=2k ;;
-          0x1000) VARIANT=4k ;;
-          *) echo "Board reports unrecognized logical-block-size '\$LBS' -- cannot tell 2K vs 4K NAND, aborting"; exit 1 ;;
-        esac
-        echo "Board logical-block-size=\$LBS -> \${VARIANT} NAND"
-
-        if [ ! -d "binaries/binaries_\${VARIANT}" ]; then
-          echo "Board is \${VARIANT} NAND but this release only has: \$(ls binaries) -- rebuild for that variant first"
-          exit 1
-        fi
-
-        cp "flash_\${VARIANT}.sh" "binaries/binaries_\${VARIANT}/"
-        chmod +x "binaries/binaries_\${VARIANT}/flash_\${VARIANT}.sh"
-        cd "binaries/binaries_\${VARIANT}"
-
-        echo "Flashing (\${VARIANT})..."
-        "./flash_\${VARIANT}.sh"
-
-        echo "Rebooting..."
-        fastboot reboot
-
-        BOOTED=0
-        for i in \$(seq 1 24); do
-          sleep 10
-          STATE=\$(adb devices | awk 'NR>1 && \$2=="device"{print \$2; exit}')
-          echo "  [\$i/24] adb state: \${STATE:-<none>}"
-          if [ "\$STATE" = "device" ]; then
-            BOOTED=1
-            break
-          fi
-        done
-        if [ "\$BOOTED" != "1" ]; then
-          echo "Board did not come back up as adb device after flash"
-          exit 1
-        fi
-        echo "BOARD BOOTED OK AFTER FLASH"
+        python3 automation/tc_023_fastboot_flash_boot_check.py --binaries-dir binaries --flash-script-dir .
         REMOTE_EOF
         REMOTE_EXIT=$?
         set -e
 
         cat hw_test_output.log
         ssh pi "rm -rf ~/$RUN_DIR" || true
+        rm -rf "${{ env.DOCS_CHECKOUT }}"
         # Best-effort cleanup -- don't fail the test over a leftover Drive file.
         rclone --config ~/rclone_fw_share.conf delete "GGDrive:/$DRIVE_HWTEST_PATH/$TAR_BASENAME" 2>&1 || true
 
-        if [ $REMOTE_EXIT -eq 0 ] && grep -q "BOARD BOOTED OK AFTER FLASH" hw_test_output.log; then
-          echo "Hardware test PASSED -- board booted after flash"
+        # tc_023's own exit code convention (0=PASS, 1=FAIL, 2=ERROR) drives
+        # this directly now -- see automation/lib/result.py in cqm22x-docs.
+        if [ $REMOTE_EXIT -eq 0 ]; then
+          echo "TC-023 PASSED -- board booted after flash"
           echo "HW_TEST_RESULT=PASS" >> $GITHUB_ENV
-        else
-          echo "Hardware test FAILED -- see log above"
+        elif [ $REMOTE_EXIT -eq 1 ]; then
+          echo "TC-023 FAILED -- see log above"
           echo "HW_TEST_RESULT=FAIL" >> $GITHUB_ENV
+          exit 1
+        else
+          echo "TC-023 ERROR (exit=$REMOTE_EXIT) -- see log above"
+          echo "HW_TEST_RESULT=ERROR" >> $GITHUB_ENV
           exit 1
         fi
 
