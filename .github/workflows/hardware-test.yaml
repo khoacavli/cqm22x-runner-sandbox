@@ -9,7 +9,17 @@ name: Hardware Test
 # something on the rig itself, swapping the board, or re-running a flaky
 # hardware pass on a build that already exists.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      level:
+        description: 'Test level to run (cumulative -- see cqm22x-docs automation/README.adoc)'
+        required: false
+        type: choice
+        default: 'basic'
+        options:
+          - basic
+          - full
+          - night
 
 jobs:
   hw-test:
@@ -82,13 +92,13 @@ jobs:
             echo "Tailscale link recovered"
           fi
 
-      # Step 3: all hardware-test *logic* (NAND detection, flash, boot-check,
-      # pass/fail criteria) lives in cqm22x-docs, not here --
-      # testcases/cases/TC-023.adoc documents it,
-      # automation/tc_023_fastboot_flash_boot_check.py implements it. This
-      # step is just infra plumbing: get that script onto the rig and run
-      # it. Anyone can run the exact same script locally against the rig
-      # (see automation/README.adoc).
+      # Step 3: all test *logic* (which test cases exist, what level each is
+      # tagged, pass/fail criteria) lives in cqm22x-docs, not here -- see
+      # automation/run_tests.py and automation/README.adoc there. This step
+      # is just infra plumbing: get the whole docs repo onto the rig (not
+      # just automation/ -- run_tests.py also needs scripts/lib_testcases.py
+      # and testcases/cases/*.adoc to resolve each script's level) and run
+      # it. Anyone can run the exact same command locally against the rig.
       - name: Fetch Test Automation (cqm22x-docs)
         timeout-minutes: 3
         run: |
@@ -101,17 +111,18 @@ jobs:
       # side (BINARIES_DL_LINK, from step 1) instead of being freshly
       # uploaded from a local build -- there's no local build in this
       # pipeline to upload from.
-      - name: Hardware Test (flash + boot check)
+      - name: Hardware Test (run_tests.py)
         timeout-minutes: 20
         run: |
           RUN_DIR="hwtest/run-${{ github.run_id }}"
+          LEVEL="${{ inputs.level }}"
 
-          echo "Uploading flash_2k.sh + flash_4k.sh + test automation script to test rig ($RUN_DIR)..."
+          echo "Uploading flash_2k.sh + flash_4k.sh + test automation to test rig ($RUN_DIR)..."
           ssh pi "mkdir -p ~/$RUN_DIR"
           scp flash_2k.sh flash_4k.sh "pi:~/$RUN_DIR/"
-          scp -r "${{ env.DOCS_CHECKOUT }}/automation" "pi:~/$RUN_DIR/"
+          scp -r "${{ env.DOCS_CHECKOUT }}" "pi:~/$RUN_DIR/docs"
 
-          echo "Running TC-023 on test rig (flock-serialized -- waits its turn if another job is using the board)..."
+          echo "Running automation/run_tests.py --level $LEVEL on test rig (flock-serialized -- waits its turn if another job is using the board)..."
           set +e
           ssh pi "flock -w 1200 ~/hwtest/board.lock bash -s" > hw_test_output.log 2>&1 <<REMOTE_EOF
           set -e
@@ -120,29 +131,41 @@ jobs:
           source ~/ggdrive-tools/ggdrive_aliases.sh
           download_ggdrive "$BINARIES_DL_LINK" "$BINARIES_NAME"
           tar xzf "$BINARIES_NAME"
-          python3 automation/tc_023_fastboot_flash_boot_check.py --binaries-dir binaries --flash-script-dir .
+          python3 docs/automation/run_tests.py --level $LEVEL --evidence-dir test_evidence
           REMOTE_EOF
           REMOTE_EXIT=$?
           set -e
 
           cat hw_test_output.log
+
+          echo "Pulling test evidence back from the rig..."
+          mkdir -p hw_test_evidence
+          scp -r "pi:~/$RUN_DIR/test_evidence/." hw_test_evidence/ 2>&1 || echo "Could not pull evidence dir (test run may have failed before it was written)"
+
           ssh pi "rm -rf ~/$RUN_DIR" || true
           rm -rf "${{ env.DOCS_CHECKOUT }}"
 
-          # tc_023's own exit code convention (0=PASS, 1=FAIL, 2=ERROR)
-          # drives this directly -- see automation/lib/result.py in cqm22x-docs.
+          # run_tests.py's own exit code convention: 0 only if every selected
+          # test PASSED, 1 otherwise -- which test and why is in
+          # hw_test_evidence/*.log and results.json, both uploaded next.
           if [ $REMOTE_EXIT -eq 0 ]; then
-            echo "TC-023 PASSED -- board booted after flash"
+            echo "Hardware test level=$LEVEL PASSED"
             echo "HW_TEST_RESULT=PASS" >> $GITHUB_ENV
-          elif [ $REMOTE_EXIT -eq 1 ]; then
-            echo "TC-023 FAILED -- see log above"
+          else
+            echo "Hardware test level=$LEVEL FAILED -- see log above / hw_test_evidence artifact"
             echo "HW_TEST_RESULT=FAIL" >> $GITHUB_ENV
             exit 1
-          else
-            echo "TC-023 ERROR (exit=$REMOTE_EXIT) -- see log above"
-            echo "HW_TEST_RESULT=ERROR" >> $GITHUB_ENV
-            exit 1
           fi
+
+      - name: Upload Test Evidence
+        if: always()
+        id: upload_test_evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: hw-test-evidence-${{ github.run_id }}
+          path: hw_test_evidence/
+          if-no-files-found: ignore
+          retention-days: 90
 
       - name: Publish Result
         if: always()
@@ -150,13 +173,20 @@ jobs:
           STATUS="${{ job.status }}"
           RESULT="${{ env.HW_TEST_RESULT || 'FAIL (did not reach test step)' }}"
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          EVIDENCE_ARTIFACT_ID="${{ steps.upload_test_evidence.outputs.artifact-id }}"
+          EVIDENCE_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${EVIDENCE_ARTIFACT_ID}"
 
           {
             echo "# Hardware Test Results"
             echo ""
             echo "Status: $STATUS"
+            echo "Level: ${{ inputs.level }}"
             echo "Binaries tested: ${{ env.BINARIES_NAME }}"
             echo "Result: $RESULT"
+            if [ -n "$EVIDENCE_ARTIFACT_ID" ]; then
+              echo ""
+              echo "Test evidence: [download]($EVIDENCE_URL)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
           WEBHOOK="${{ secrets.SLACK_WEBHOOK_URL }}"
@@ -165,10 +195,14 @@ jobs:
             exit 0
           fi
 
-          TEXT="*Hardware Test* -- $STATUS
+          TEXT="*Hardware Test* (level=${{ inputs.level }}) -- $STATUS
           <$RUN_URL|View run> -- triggered by ${{ github.actor }}
           Binaries tested: ${{ env.BINARIES_NAME }}
           Result: $RESULT"
+          if [ -n "$EVIDENCE_ARTIFACT_ID" ]; then
+            TEXT="$TEXT
+          Test evidence: <$EVIDENCE_URL|download>"
+          fi
 
           PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$TEXT")
           HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$WEBHOOK")

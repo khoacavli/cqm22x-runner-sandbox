@@ -1253,12 +1253,16 @@ jobs:
           exit 1
         fi
 
-        echo "Uploading flash_2k.sh + flash_4k.sh + test automation script to test rig ($RUN_DIR)..."
+        echo "Uploading flash_2k.sh + flash_4k.sh + test automation to test rig ($RUN_DIR)..."
         ssh pi "mkdir -p ~/$RUN_DIR"
         scp flash_2k.sh flash_4k.sh "pi:~/$RUN_DIR/"
-        scp -r "${{ env.DOCS_CHECKOUT }}/automation" "pi:~/$RUN_DIR/"
+        scp -r "${{ env.DOCS_CHECKOUT }}" "pi:~/$RUN_DIR/docs"
 
-        echo "Running TC-023 on test rig (flock-serialized -- waits its turn if another job is using the board)..."
+        # CI's whole job here is "download the build, run the master test
+        # runner at basic level" -- run_tests.py (in cqm22x-docs) owns which
+        # test cases that means and how each one is judged PASS/FAIL/ERROR;
+        # nothing hardware-specific is duplicated in this workflow.
+        echo "Running automation/run_tests.py --level basic on test rig (flock-serialized -- waits its turn if another job is using the board)..."
         set +e
         ssh pi "flock -w 1200 ~/hwtest/board.lock bash -s" > hw_test_output.log 2>&1 <<REMOTE_EOF
         set -e
@@ -1267,31 +1271,44 @@ jobs:
         source ~/ggdrive-tools/ggdrive_aliases.sh
         download_ggdrive "$DL_LINK" "$TAR_BASENAME"
         tar xzf "$TAR_BASENAME"
-        python3 automation/tc_023_fastboot_flash_boot_check.py --binaries-dir binaries --flash-script-dir .
+        python3 docs/automation/run_tests.py --level basic --evidence-dir test_evidence
         REMOTE_EOF
         REMOTE_EXIT=$?
         set -e
 
         cat hw_test_output.log
+
+        echo "Pulling test evidence back from the rig..."
+        mkdir -p "${{ env.WORKSPACE_ROOT }}/hw_test_evidence"
+        scp -r "pi:~/$RUN_DIR/test_evidence/." "${{ env.WORKSPACE_ROOT }}/hw_test_evidence/" 2>&1 || echo "Could not pull evidence dir (test run may have failed before it was written)"
+
         ssh pi "rm -rf ~/$RUN_DIR" || true
         rm -rf "${{ env.DOCS_CHECKOUT }}"
         # Best-effort cleanup -- don't fail the test over a leftover Drive file.
         rclone --config ~/rclone_fw_share.conf delete "GGDrive:/$DRIVE_HWTEST_PATH/$TAR_BASENAME" 2>&1 || true
 
-        # tc_023's own exit code convention (0=PASS, 1=FAIL, 2=ERROR) drives
-        # this directly now -- see automation/lib/result.py in cqm22x-docs.
+        # run_tests.py's own exit code convention: 0 only if every selected
+        # test PASSED, 1 otherwise (some test FAILED or ERRORed -- which one
+        # and why is in hw_test_evidence/*.log and results.json, both
+        # uploaded as an artifact next).
         if [ $REMOTE_EXIT -eq 0 ]; then
-          echo "TC-023 PASSED -- board booted after flash"
+          echo "Hardware test level=basic PASSED"
           echo "HW_TEST_RESULT=PASS" >> $GITHUB_ENV
-        elif [ $REMOTE_EXIT -eq 1 ]; then
-          echo "TC-023 FAILED -- see log above"
+        else
+          echo "Hardware test level=basic FAILED -- see log above / hw_test_evidence artifact"
           echo "HW_TEST_RESULT=FAIL" >> $GITHUB_ENV
           exit 1
-        else
-          echo "TC-023 ERROR (exit=$REMOTE_EXIT) -- see log above"
-          echo "HW_TEST_RESULT=ERROR" >> $GITHUB_ENV
-          exit 1
         fi
+
+    - name: Upload Test Evidence
+      if: always() && inputs.run_hw_test
+      id: upload_test_evidence
+      uses: actions/upload-artifact@v4
+      with:
+        name: hw-test-evidence-${{ github.run_id }}
+        path: ${{ env.WORKSPACE_ROOT }}/hw_test_evidence/
+        if-no-files-found: ignore
+        retention-days: 90
 
     # Step 13: Upload Release Package -- build-release always runs this
     # (publish_release=true); build-verify skips it (publish_release=false), so
@@ -1342,6 +1359,8 @@ jobs:
         RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         LOGS_ARTIFACT_ID="${{ steps.upload_logs.outputs.artifact-id }}"
         LOGS_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${LOGS_ARTIFACT_ID}"
+        EVIDENCE_ARTIFACT_ID="${{ steps.upload_test_evidence.outputs.artifact-id }}"
+        EVIDENCE_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${EVIDENCE_ARTIFACT_ID}"
         TIMING_LOG="${{ env.CHIPCODE_ROOT }}/build_logs/timing.log"
 
         {
@@ -1365,6 +1384,9 @@ jobs:
           fi
           if [ -n "$LOGS_ARTIFACT_ID" ]; then
             echo "- Build logs (per-module logs + timing_chart.html): [download]($LOGS_URL)"
+          fi
+          if [ -n "$EVIDENCE_ARTIFACT_ID" ]; then
+            echo "- Hardware test evidence (per-test logs + results.json): [download]($EVIDENCE_URL)"
           fi
           echo ""
         } >> "$GITHUB_STEP_SUMMARY"
@@ -1439,6 +1461,10 @@ jobs:
         if [ -n "$LOGS_ARTIFACT_ID" ]; then
           TEXT="$TEXT
         Build log: <$LOGS_URL|download>"
+        fi
+        if [ -n "$EVIDENCE_ARTIFACT_ID" ]; then
+          TEXT="$TEXT
+        Test evidence: <$EVIDENCE_URL|download>"
         fi
         if [ -n "$SLACK_TIMING" ]; then
           TEXT="$TEXT
