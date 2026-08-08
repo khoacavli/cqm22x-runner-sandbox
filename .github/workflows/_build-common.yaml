@@ -1193,21 +1193,17 @@ jobs:
           echo "Tailscale link recovered"
         fi
 
-    # All hardware-test *logic* (NAND detection, flash, boot-check, pass/fail
+    # All test *logic* (NAND detection, flash, boot-check, pass/fail
     # criteria) lives in cqm22x-docs, not here -- testcases/cases/TC-023.adoc
     # documents it, automation/tc_023_fastboot_flash_boot_check.py implements
-    # it. This step's job is now just infra plumbing: get that script onto
-    # the rig and run it. Anyone can run the exact same script locally
-    # against the rig (see automation/README.adoc) -- this step doesn't do
-    # anything the docs repo doesn't already let you do by hand.
-    - name: Fetch Test Automation (cqm22x-docs)
-      if: success() && inputs.run_hw_test
-      timeout-minutes: 3
-      run: |
-        DOCS_CHECKOUT=$(mktemp -d)
-        git clone --depth 1 git@github.com:cavli-wireless/cqm22x-docs.git "$DOCS_CHECKOUT"
-        echo "DOCS_CHECKOUT=$DOCS_CHECKOUT" >> $GITHUB_ENV
-
+    # it. cqm22x-docs is a manifest project now (see
+    # chipcode-cqm22x-3-qcom-refs.xml, pinned to main), so "Initialize Repo
+    # Tool" already synced it to ${{ env.WORKSPACE_ROOT }}/cqm22x-docs
+    # earlier in this job -- no separate clone needed here. Anyone can run
+    # the exact same command locally against the rig (see
+    # automation/README.adoc) -- CI doesn't do anything the docs repo
+    # doesn't already let you do by hand.
+    #
     # Board NAND page size (2K vs 4K) is auto-detected from the board itself
     # (fastboot's "logical-block-size": 0x800 = 2K, 0x1000 = 4K -- confirmed
     # against the real rig board, which reports 0x800 and matches the
@@ -1256,7 +1252,7 @@ jobs:
         echo "Uploading flash_2k.sh + flash_4k.sh + test automation to test rig ($RUN_DIR)..."
         ssh pi "mkdir -p ~/$RUN_DIR"
         scp flash_2k.sh flash_4k.sh "pi:~/$RUN_DIR/"
-        scp -r "${{ env.DOCS_CHECKOUT }}" "pi:~/$RUN_DIR/docs"
+        scp -r "${{ env.WORKSPACE_ROOT }}/cqm22x-docs" "pi:~/$RUN_DIR/docs"
 
         # CI's whole job here is "download the build, run the master test
         # runner at basic level" -- run_tests.py (in cqm22x-docs) owns which
@@ -1283,7 +1279,6 @@ jobs:
         scp -r "pi:~/$RUN_DIR/test_evidence/." "${{ env.WORKSPACE_ROOT }}/hw_test_evidence/" 2>&1 || echo "Could not pull evidence dir (test run may have failed before it was written)"
 
         ssh pi "rm -rf ~/$RUN_DIR" || true
-        rm -rf "${{ env.DOCS_CHECKOUT }}"
         # Best-effort cleanup -- don't fail the test over a leftover Drive file.
         rclone --config ~/rclone_fw_share.conf delete "GGDrive:/$DRIVE_HWTEST_PATH/$TAR_BASENAME" 2>&1 || true
 
@@ -1309,6 +1304,39 @@ jobs:
         path: ${{ env.WORKSPACE_ROOT }}/hw_test_evidence/
         if-no-files-found: ignore
         retention-days: 90
+
+    # Step 12d: Create Test Package -- everything needed to run tests
+    # locally against a board (testcases + automation scripts), plus, if
+    # this run actually did a hardware test (inputs.run_hw_test), the real
+    # evidence + a generated report from it. This is the *entire*
+    # cqm22x-docs checkout (already synced by "Initialize Repo Tool" --
+    # see the manifest), not a curated subset: run_tests.py/gen_report.py
+    # need scripts/lib_testcases.py and testcases/cases/*.adoc alongside
+    # automation/ to work at all, and shipping the whole repo means
+    # whoever gets the release package can run the *exact* commands from
+    # cqm22x-docs' automation/README.adoc, no adaptation needed.
+    - name: Create Test Package
+      if: success()
+      run: |
+        cd "${{ env.RELEASE_PATH }}"
+        mkdir -p tests
+        cp -r "${{ env.WORKSPACE_ROOT }}/cqm22x-docs/." tests/docs/
+        rm -rf tests/docs/.git
+
+        if [ -d "${{ env.WORKSPACE_ROOT }}/hw_test_evidence" ] && [ -n "$(ls -A "${{ env.WORKSPACE_ROOT }}/hw_test_evidence" 2>/dev/null)" ]; then
+          cp -r "${{ env.WORKSPACE_ROOT }}/hw_test_evidence" tests/evidence
+          echo "Generating report from this run's evidence..."
+          python3 tests/docs/automation/gen_report.py --evidence-dir tests/evidence --out tests/report.adoc
+        else
+          echo "No hardware-test evidence from this run (run_hw_test was off, or the test step didn't reach evidence collection)." > tests/README.txt
+          echo "" >> tests/README.txt
+          echo "Everything needed to run the tests yourself is still here:" >> tests/README.txt
+          echo "  cd tests/docs && python3 automation/run_tests.py --level basic" >> tests/README.txt
+          echo "See tests/docs/automation/README.adoc for the full guide." >> tests/README.txt
+        fi
+
+        echo "Test package contents:"
+        find tests -maxdepth 2
 
     # Step 13: Upload Release Package -- build-release always runs this
     # (publish_release=true); build-verify skips it (publish_release=false), so
