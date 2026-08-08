@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: ''
+      run_hw_test:
+        description: 'Flash the built image onto the test rig board and confirm it boots (adb) -- off by default'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -35,3 +40,4 @@ jobs:
       cavli_services_revision: 'main'
       cherry_pick_sha: ${{ inputs.cherry_pick_sha }}
       publish_release: true
+      run_hw_test: ${{ inputs.run_hw_test }}

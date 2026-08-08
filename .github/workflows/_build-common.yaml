@@ -65,6 +65,15 @@ on:
         type: boolean
         required: false
         default: true
+      # Optional: after the release package is built, SSH to the hardware test
+      # rig (Raspberry Pi "pi", reached over Tailscale -- see "Ensure Tailscale
+      # Connectivity" step), fastboot-flash the board with this build's binaries,
+      # reboot it, and confirm it comes back up as an adb device. Off by default
+      # since not every build needs (or has a free board for) a hardware pass.
+      run_hw_test:
+        type: boolean
+        required: false
+        default: false
 
 # No concurrency limit here anymore -- it used to serialize same-workflow/same-ref
 # runs (see build-release.yaml, which still does this: only one "the" release build
@@ -1157,6 +1166,122 @@ jobs:
         echo "RELEASE_FOLDER=$RELEASE_FOLDER" >> $GITHUB_ENV
         echo "RELEASE_PATH=${{ env.WORKSPACE_ROOT }}/$RELEASE_FOLDER" >> $GITHUB_ENV
 
+    # Step 12b: Hardware Test -- optional (inputs.run_hw_test). Talks to the
+    # test rig ("pi", a Raspberry Pi with a 2K-NAND board on USB) over
+    # Tailscale. This runner joined the tailnet once (userspace-networking
+    # mode, relayed via DERP -- this sandbox can't do direct UDP P2P) and
+    # ~/.ssh/config has a permanent ProxyCommand for Host "pi", so a plain
+    # "ssh pi ..." / "scp ... pi:..." just works as long as tailscaled is
+    # still alive. This step self-heals that daemon if it isn't.
+    - name: Ensure Tailscale Connectivity
+      if: success() && inputs.run_hw_test
+      timeout-minutes: 3
+      run: |
+        if ssh -o ConnectTimeout=8 -o BatchMode=yes pi 'echo ok' >/dev/null 2>&1; then
+          echo "Tailscale link to test rig OK"
+        else
+          echo "SSH to test rig failed -- restarting tailscaled on this runner"
+          sudo pkill -f tailscaled 2>/dev/null || true
+          sleep 2
+          sudo mkdir -p /var/lib/tailscale /run/tailscale
+          sudo nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --tun=userspace-networking --socks5-server=localhost:1055 --outbound-http-proxy-listen=localhost:1056 > /tmp/tailscaled.log 2>&1 &
+          disown
+          sleep 5
+          sudo tailscale --socket=/run/tailscale/tailscaled.sock up --hostname=cicd-sdx-jammy-runner --accept-dns=false
+          sleep 3
+          ssh -o ConnectTimeout=10 -o BatchMode=yes pi 'echo ok' || { echo "Still cannot reach test rig -- failing hw test"; exit 1; }
+          echo "Tailscale link recovered"
+        fi
+
+    # Only flash_2k.sh is wired up for now (the only board currently on the
+    # rig is 2K NAND) -- switch to flash_4k.sh / a 4K binaries_4k dir here if
+    # a 4K board gets added later.
+    - name: Hardware Test (flash + boot check)
+      if: success() && inputs.run_hw_test
+      timeout-minutes: 20
+      run: |
+        cd "${{ env.RELEASE_PATH }}"
+        BINARIES_TAR=$(find . -maxdepth 1 -name "Kuno.LEI.1.0_SDX35_*_binaries.tar.gz" -type f | head -1)
+        if [ -z "$BINARIES_TAR" ]; then
+          echo "No binaries archive in release package -- cannot hardware-test"
+          echo "HW_TEST_RESULT=SKIPPED (no binaries archive)" >> $GITHUB_ENV
+          exit 1
+        fi
+        TAR_BASENAME=$(basename "$BINARIES_TAR")
+        RUN_DIR="hwtest/run-${{ github.run_id }}"
+
+        echo "Uploading $TAR_BASENAME + flash_2k.sh to test rig ($RUN_DIR)..."
+        ssh pi "mkdir -p ~/$RUN_DIR"
+        scp "$BINARIES_TAR" flash_2k.sh "pi:~/$RUN_DIR/"
+
+        echo "Running flash + boot check on test rig (flock-serialized -- waits its turn if another job is using the board)..."
+        set +e
+        ssh pi "flock -w 1200 ~/hwtest/board.lock bash -s" > hw_test_output.log 2>&1 <<REMOTE_EOF
+        set -e
+        cd ~/$RUN_DIR
+        tar xzf "$TAR_BASENAME"
+        cp flash_2k.sh binaries/binaries_2k/
+        chmod +x binaries/binaries_2k/flash_2k.sh
+        cd binaries/binaries_2k
+
+        DEV=\$(adb devices | awk 'NR>1 && \$2=="device"{print \$1; exit}')
+        if [ -n "\$DEV" ]; then
+          echo "Rebooting board \$DEV into fastboot..."
+          adb -s "\$DEV" reboot bootloader
+        else
+          echo "Board not visible via adb -- assuming it may already be in fastboot"
+        fi
+
+        FB_OK=0
+        for i in \$(seq 1 12); do
+          sleep 5
+          if fastboot devices | grep -q fastboot; then
+            FB_OK=1
+            break
+          fi
+        done
+        if [ "\$FB_OK" != "1" ]; then
+          echo "Board never showed up in fastboot mode"
+          exit 1
+        fi
+
+        echo "Flashing..."
+        ./flash_2k.sh
+
+        echo "Rebooting..."
+        fastboot reboot
+
+        BOOTED=0
+        for i in \$(seq 1 24); do
+          sleep 10
+          STATE=\$(adb devices | awk 'NR>1 && \$2=="device"{print \$2; exit}')
+          echo "  [\$i/24] adb state: \${STATE:-<none>}"
+          if [ "\$STATE" = "device" ]; then
+            BOOTED=1
+            break
+          fi
+        done
+        if [ "\$BOOTED" != "1" ]; then
+          echo "Board did not come back up as adb device after flash"
+          exit 1
+        fi
+        echo "BOARD BOOTED OK AFTER FLASH"
+        REMOTE_EOF
+        REMOTE_EXIT=$?
+        set -e
+
+        cat hw_test_output.log
+        ssh pi "rm -rf ~/$RUN_DIR" || true
+
+        if [ $REMOTE_EXIT -eq 0 ] && grep -q "BOARD BOOTED OK AFTER FLASH" hw_test_output.log; then
+          echo "Hardware test PASSED -- board booted after flash"
+          echo "HW_TEST_RESULT=PASS" >> $GITHUB_ENV
+        else
+          echo "Hardware test FAILED -- see log above"
+          echo "HW_TEST_RESULT=FAIL" >> $GITHUB_ENV
+          exit 1
+        fi
+
     # Step 13: Upload Release Package -- build-release always runs this
     # (publish_release=true); build-verify skips it (publish_release=false), so
     # one-off test builds never touch the shared Google Drive folder.
@@ -1216,6 +1341,10 @@ jobs:
             echo ""
             echo "Cherry-picked:"
             echo "${{ env.CHERRY_PICK_SUMMARY }}" | sed 's/^/- `/; s/ -> / onto **/; s/$/**/'
+          fi
+          if [ -n "${{ env.HW_TEST_RESULT }}" ]; then
+            echo ""
+            echo "Hardware test: ${{ env.HW_TEST_RESULT }}"
           fi
           echo ""
           echo "## Downloads"
@@ -1287,6 +1416,10 @@ jobs:
           CP=$(echo "${{ env.CHERRY_PICK_SUMMARY }}" | tr '\n' ';' | sed 's/;$//; s/;/, /g')
           TEXT="$TEXT
         Cherry-picked: $CP"
+        fi
+        if [ -n "${{ env.HW_TEST_RESULT }}" ]; then
+          TEXT="$TEXT
+        Hardware test: ${{ env.HW_TEST_RESULT }}"
         fi
         if [ -n "${{ env.DRIVE_LINK }}" ]; then
           TEXT="$TEXT

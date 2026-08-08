@@ -63,6 +63,11 @@ on:
         required: false
         type: string
         default: ''
+      run_hw_test:
+        description: 'Flash the built image onto the test rig board and confirm it boots (adb) -- off by default'
+        required: false
+        type: boolean
+        default: false
 
 # Only one "the" release build in flight at a time -- a repeat dispatch (accidental
 # double-click, retry after a transient API error, etc.) queues behind the current
@@ -88,3 +93,4 @@ jobs:
       cavli_services_revision: ${{ inputs.cavli_services_revision }}
       cavli_sdk_revision: ${{ inputs.cavli_sdk_revision }}
       publish_release: true
+      run_hw_test: ${{ inputs.run_hw_test }}
