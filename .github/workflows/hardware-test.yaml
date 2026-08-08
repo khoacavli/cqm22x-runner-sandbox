@@ -1,0 +1,199 @@
+name: Hardware Test
+
+# Standalone, build-free pipeline: grabs whichever binaries archive is most
+# recently modified in the shared Drive folder that both Build Release and
+# Build Verify publish to (Cavli-Team/share/khoa/test -- no distinction made
+# between the two; "latest" is purely by Drive ModTime) and runs just the
+# flash + boot check against the test rig board. For re-testing hardware
+# without waiting through a full ~15-20min build again -- e.g. after fixing
+# something on the rig itself, swapping the board, or re-running a flaky
+# hardware pass on a build that already exists.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  hw-test:
+    runs-on: [self-hosted, cqm22x-test-runner]
+    timeout-minutes: 25
+    steps:
+      # Step 1: figure out which binaries archive to test, and grab flash_2k.sh
+      # (same file the build pipeline generates -- static content, so whatever
+      # copy is currently sitting in the shared Drive folder is fine to reuse).
+      - name: Find Latest Release Binaries
+        run: |
+          RCLONE_BIN=/usr/bin/rclone
+          RCLONE_CONF=/home/user/share_data/rclone-cli/Cavli-Team.conf
+          DRIVE_DIR="Cavli-Team/share/khoa/test"
+
+          LATEST=$("$RCLONE_BIN" --config "$RCLONE_CONF" lsjson "GGDrive:/$DRIVE_DIR" 2>/dev/null | python3 -c "
+          import json, sys
+          items = json.load(sys.stdin)
+          cands = [i for i in items if i['Name'].startswith('Kuno.LEI.1.0_SDX35_') and i['Name'].endswith('_binaries.tar.gz')]
+          if not cands:
+              sys.exit(1)
+          cands.sort(key=lambda i: i['ModTime'], reverse=True)
+          print(cands[0]['Name'])
+          ")
+          if [ -z "$LATEST" ]; then
+            echo "No release binaries archive found in Drive:/$DRIVE_DIR -- has a build ever published here?"
+            exit 1
+          fi
+          echo "Latest binaries archive on Drive: $LATEST"
+
+          DL_LINK=$("$RCLONE_BIN" --config "$RCLONE_CONF" link "GGDrive:/$DRIVE_DIR/$LATEST" 2>/dev/null)
+          if [ -z "$DL_LINK" ]; then
+            echo "Could not get a share link for $LATEST"
+            exit 1
+          fi
+          echo "Share link: $DL_LINK"
+
+          "$RCLONE_BIN" --config "$RCLONE_CONF" copy "GGDrive:/$DRIVE_DIR/flash_2k.sh" . 2>/dev/null
+          if [ ! -f flash_2k.sh ]; then
+            echo "Could not fetch flash_2k.sh from Drive:/$DRIVE_DIR"
+            exit 1
+          fi
+          chmod +x flash_2k.sh
+
+          echo "BINARIES_NAME=$LATEST" >> $GITHUB_ENV
+          echo "BINARIES_DL_LINK=$DL_LINK" >> $GITHUB_ENV
+
+      # Step 2: same self-healing Tailscale check as the build pipeline's hw
+      # test step -- see _build-common.yaml for why this runner needs it
+      # (userspace-networking mode, no systemd to keep tailscaled alive).
+      - name: Ensure Tailscale Connectivity
+        timeout-minutes: 3
+        run: |
+          if ssh -o ConnectTimeout=8 -o BatchMode=yes pi 'echo ok' >/dev/null 2>&1; then
+            echo "Tailscale link to test rig OK"
+          else
+            echo "SSH to test rig failed -- restarting tailscaled on this runner"
+            sudo pkill -f tailscaled 2>/dev/null || true
+            sleep 2
+            sudo mkdir -p /var/lib/tailscale /run/tailscale
+            sudo nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --tun=userspace-networking --socks5-server=localhost:1055 --outbound-http-proxy-listen=localhost:1056 > /tmp/tailscaled.log 2>&1 &
+            disown
+            sleep 5
+            sudo tailscale --socket=/run/tailscale/tailscaled.sock up --hostname=cicd-sdx-jammy-runner --accept-dns=false
+            sleep 3
+            ssh -o ConnectTimeout=10 -o BatchMode=yes pi 'echo ok' || { echo "Still cannot reach test rig -- failing hw test"; exit 1; }
+            echo "Tailscale link recovered"
+          fi
+
+      # Step 3: same flash + boot check as the build pipeline's hw test step,
+      # except the binaries archive is pulled straight from Drive on the rig
+      # side (BINARIES_DL_LINK, from step 1) instead of being freshly
+      # uploaded from a local build -- there's no local build in this
+      # pipeline to upload from.
+      - name: Hardware Test (flash + boot check)
+        timeout-minutes: 20
+        run: |
+          RUN_DIR="hwtest/run-${{ github.run_id }}"
+
+          echo "Uploading flash_2k.sh to test rig ($RUN_DIR)..."
+          ssh pi "mkdir -p ~/$RUN_DIR"
+          scp flash_2k.sh "pi:~/$RUN_DIR/"
+
+          echo "Running flash + boot check on test rig (flock-serialized -- waits its turn if another job is using the board)..."
+          set +e
+          ssh pi "flock -w 1200 ~/hwtest/board.lock bash -s" > hw_test_output.log 2>&1 <<REMOTE_EOF
+          set -e
+          cd ~/$RUN_DIR
+          shopt -s expand_aliases
+          source ~/ggdrive-tools/ggdrive_aliases.sh
+          download_ggdrive "$BINARIES_DL_LINK" "$BINARIES_NAME"
+          tar xzf "$BINARIES_NAME"
+          cp flash_2k.sh binaries/binaries_2k/
+          chmod +x binaries/binaries_2k/flash_2k.sh
+          cd binaries/binaries_2k
+
+          DEV=\$(adb devices | awk 'NR>1 && \$2=="device"{print \$1; exit}')
+          if [ -n "\$DEV" ]; then
+            echo "Rebooting board \$DEV into fastboot..."
+            adb -s "\$DEV" reboot bootloader
+          else
+            echo "Board not visible via adb -- assuming it may already be in fastboot"
+          fi
+
+          FB_OK=0
+          for i in \$(seq 1 12); do
+            sleep 5
+            if fastboot devices | grep -q fastboot; then
+              FB_OK=1
+              break
+            fi
+          done
+          if [ "\$FB_OK" != "1" ]; then
+            echo "Board never showed up in fastboot mode"
+            exit 1
+          fi
+
+          echo "Flashing..."
+          ./flash_2k.sh
+
+          echo "Rebooting..."
+          fastboot reboot
+
+          BOOTED=0
+          for i in \$(seq 1 24); do
+            sleep 10
+            STATE=\$(adb devices | awk 'NR>1 && \$2=="device"{print \$2; exit}')
+            echo "  [\$i/24] adb state: \${STATE:-<none>}"
+            if [ "\$STATE" = "device" ]; then
+              BOOTED=1
+              break
+            fi
+          done
+          if [ "\$BOOTED" != "1" ]; then
+            echo "Board did not come back up as adb device after flash"
+            exit 1
+          fi
+          echo "BOARD BOOTED OK AFTER FLASH"
+          REMOTE_EOF
+          REMOTE_EXIT=$?
+          set -e
+
+          cat hw_test_output.log
+          ssh pi "rm -rf ~/$RUN_DIR" || true
+
+          if [ $REMOTE_EXIT -eq 0 ] && grep -q "BOARD BOOTED OK AFTER FLASH" hw_test_output.log; then
+            echo "Hardware test PASSED -- board booted after flash"
+            echo "HW_TEST_RESULT=PASS" >> $GITHUB_ENV
+          else
+            echo "Hardware test FAILED -- see log above"
+            echo "HW_TEST_RESULT=FAIL" >> $GITHUB_ENV
+            exit 1
+          fi
+
+      - name: Publish Result
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          RESULT="${{ env.HW_TEST_RESULT || 'FAIL (did not reach test step)' }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          {
+            echo "# Hardware Test Results"
+            echo ""
+            echo "Status: $STATUS"
+            echo "Binaries tested: ${{ env.BINARIES_NAME }}"
+            echo "Result: $RESULT"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          WEBHOOK="${{ secrets.SLACK_WEBHOOK_URL }}"
+          if [ -z "$WEBHOOK" ]; then
+            echo "SLACK_WEBHOOK_URL secret not set -- skipping Slack notification"
+            exit 0
+          fi
+
+          TEXT="*Hardware Test* -- $STATUS
+          <$RUN_URL|View run> -- triggered by ${{ github.actor }}
+          Binaries tested: ${{ env.BINARIES_NAME }}
+          Result: $RESULT"
+
+          PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$TEXT")
+          HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$WEBHOOK")
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Slack notification sent"
+          else
+            echo "Slack notification failed (HTTP $HTTP_CODE) -- not failing over this"
+          fi
