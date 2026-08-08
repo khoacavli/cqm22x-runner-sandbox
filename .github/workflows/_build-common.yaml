@@ -1110,8 +1110,8 @@ jobs:
         fastboot flash modem NON-HLOS.ubi
         fastboot flash boot boot.img
         fastboot flash system sysfs-2k.ubi
-        # fastboot flash recovery boot.img
-        # fastboot flash recoveryfs recoveryfs-2k.ubi
+        fastboot flash recovery boot.img
+        fastboot flash recoveryfs recoveryfs-2k.ubi
         fastboot flash keymaster km41_32.mbn
         fastboot erase misc
         FLASHEOF
@@ -1140,8 +1140,8 @@ jobs:
         fastboot flash modem NON-HLOS.ubi
         fastboot flash boot boot.img
         fastboot flash system sysfs.ubi
-        # fastboot flash recovery boot.img
-        # fastboot flash recoveryfs recoveryfs.ubi
+        fastboot flash recovery boot.img
+        fastboot flash recoveryfs recoveryfs.ubi
         fastboot flash keymaster km41_32.mbn
         fastboot erase misc
         FLASHEOF
@@ -1193,9 +1193,15 @@ jobs:
           echo "Tailscale link recovered"
         fi
 
-    # Only flash_2k.sh is wired up for now (the only board currently on the
-    # rig is 2K NAND) -- switch to flash_4k.sh / a 4K binaries_4k dir here if
-    # a 4K board gets added later.
+    # Board NAND page size (2K vs 4K) is auto-detected from the board itself
+    # (fastboot's "logical-block-size": 0x800 = 2K, 0x1000 = 4K -- confirmed
+    # against the real rig board, which reports 0x800 and matches the
+    # "p2K_b128K" naming already used in the build's rawprogram/patch XML
+    # files) rather than assumed, so this keeps working if a 4K board ever
+    # joins the rig without needing a workflow edit. If the release build
+    # doesn't actually contain a binaries_<variant>/ for whatever the board
+    # turns out to be (right now only binaries_2k gets built), this fails
+    # loudly instead of silently flashing the wrong image set.
     #
     # The binaries archive (~130MB) travels via Google Drive, not scp over the
     # Tailscale link: this runner and the test rig both have plain internet,
@@ -1235,9 +1241,9 @@ jobs:
           exit 1
         fi
 
-        echo "Uploading flash_2k.sh to test rig ($RUN_DIR)..."
+        echo "Uploading flash_2k.sh + flash_4k.sh to test rig ($RUN_DIR)..."
         ssh pi "mkdir -p ~/$RUN_DIR"
-        scp flash_2k.sh "pi:~/$RUN_DIR/"
+        scp flash_2k.sh flash_4k.sh "pi:~/$RUN_DIR/"
 
         echo "Running flash + boot check on test rig (flock-serialized -- waits its turn if another job is using the board)..."
         set +e
@@ -1248,9 +1254,6 @@ jobs:
         source ~/ggdrive-tools/ggdrive_aliases.sh
         download_ggdrive "$DL_LINK" "$TAR_BASENAME"
         tar xzf "$TAR_BASENAME"
-        cp flash_2k.sh binaries/binaries_2k/
-        chmod +x binaries/binaries_2k/flash_2k.sh
-        cd binaries/binaries_2k
 
         DEV=\$(adb devices | awk 'NR>1 && \$2=="device"{print \$1; exit}')
         if [ -n "\$DEV" ]; then
@@ -1273,8 +1276,26 @@ jobs:
           exit 1
         fi
 
-        echo "Flashing..."
-        ./flash_2k.sh
+        echo "Detecting board NAND page size..."
+        LBS=\$(fastboot getvar all 2>&1 | grep -oP 'logical-block-size:\s*\K0x[0-9a-fA-F]+' | head -1)
+        case "\$LBS" in
+          0x800) VARIANT=2k ;;
+          0x1000) VARIANT=4k ;;
+          *) echo "Board reports unrecognized logical-block-size '\$LBS' -- cannot tell 2K vs 4K NAND, aborting"; exit 1 ;;
+        esac
+        echo "Board logical-block-size=\$LBS -> \${VARIANT} NAND"
+
+        if [ ! -d "binaries/binaries_\${VARIANT}" ]; then
+          echo "Board is \${VARIANT} NAND but this release only has: \$(ls binaries) -- rebuild for that variant first"
+          exit 1
+        fi
+
+        cp "flash_\${VARIANT}.sh" "binaries/binaries_\${VARIANT}/"
+        chmod +x "binaries/binaries_\${VARIANT}/flash_\${VARIANT}.sh"
+        cd "binaries/binaries_\${VARIANT}"
+
+        echo "Flashing (\${VARIANT})..."
+        "./flash_\${VARIANT}.sh"
 
         echo "Rebooting..."
         fastboot reboot

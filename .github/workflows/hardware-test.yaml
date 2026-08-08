@@ -16,9 +16,11 @@ jobs:
     runs-on: [self-hosted, cqm22x-test-runner]
     timeout-minutes: 25
     steps:
-      # Step 1: figure out which binaries archive to test, and grab flash_2k.sh
-      # (same file the build pipeline generates -- static content, so whatever
-      # copy is currently sitting in the shared Drive folder is fine to reuse).
+      # Step 1: figure out which binaries archive to test, and grab
+      # flash_2k.sh + flash_4k.sh (same files the build pipeline generates --
+      # static content, so whatever copies are currently sitting in the
+      # shared Drive folder are fine to reuse). Which one actually gets run
+      # is decided later, from the board's own reported NAND page size.
       - name: Find Latest Release Binaries
         run: |
           RCLONE_BIN=/usr/bin/rclone
@@ -48,11 +50,12 @@ jobs:
           echo "Share link: $DL_LINK"
 
           "$RCLONE_BIN" --config "$RCLONE_CONF" copy "GGDrive:/$DRIVE_DIR/flash_2k.sh" . 2>/dev/null
-          if [ ! -f flash_2k.sh ]; then
-            echo "Could not fetch flash_2k.sh from Drive:/$DRIVE_DIR"
+          "$RCLONE_BIN" --config "$RCLONE_CONF" copy "GGDrive:/$DRIVE_DIR/flash_4k.sh" . 2>/dev/null
+          if [ ! -f flash_2k.sh ] || [ ! -f flash_4k.sh ]; then
+            echo "Could not fetch flash_2k.sh / flash_4k.sh from Drive:/$DRIVE_DIR"
             exit 1
           fi
-          chmod +x flash_2k.sh
+          chmod +x flash_2k.sh flash_4k.sh
 
           echo "BINARIES_NAME=$LATEST" >> $GITHUB_ENV
           echo "BINARIES_DL_LINK=$DL_LINK" >> $GITHUB_ENV
@@ -89,9 +92,9 @@ jobs:
         run: |
           RUN_DIR="hwtest/run-${{ github.run_id }}"
 
-          echo "Uploading flash_2k.sh to test rig ($RUN_DIR)..."
+          echo "Uploading flash_2k.sh + flash_4k.sh to test rig ($RUN_DIR)..."
           ssh pi "mkdir -p ~/$RUN_DIR"
-          scp flash_2k.sh "pi:~/$RUN_DIR/"
+          scp flash_2k.sh flash_4k.sh "pi:~/$RUN_DIR/"
 
           echo "Running flash + boot check on test rig (flock-serialized -- waits its turn if another job is using the board)..."
           set +e
@@ -102,9 +105,6 @@ jobs:
           source ~/ggdrive-tools/ggdrive_aliases.sh
           download_ggdrive "$BINARIES_DL_LINK" "$BINARIES_NAME"
           tar xzf "$BINARIES_NAME"
-          cp flash_2k.sh binaries/binaries_2k/
-          chmod +x binaries/binaries_2k/flash_2k.sh
-          cd binaries/binaries_2k
 
           DEV=\$(adb devices | awk 'NR>1 && \$2=="device"{print \$1; exit}')
           if [ -n "\$DEV" ]; then
@@ -127,8 +127,26 @@ jobs:
             exit 1
           fi
 
-          echo "Flashing..."
-          ./flash_2k.sh
+          echo "Detecting board NAND page size..."
+          LBS=\$(fastboot getvar all 2>&1 | grep -oP 'logical-block-size:\s*\K0x[0-9a-fA-F]+' | head -1)
+          case "\$LBS" in
+            0x800) VARIANT=2k ;;
+            0x1000) VARIANT=4k ;;
+            *) echo "Board reports unrecognized logical-block-size '\$LBS' -- cannot tell 2K vs 4K NAND, aborting"; exit 1 ;;
+          esac
+          echo "Board logical-block-size=\$LBS -> \${VARIANT} NAND"
+
+          if [ ! -d "binaries/binaries_\${VARIANT}" ]; then
+            echo "Board is \${VARIANT} NAND but this release only has: \$(ls binaries) -- rebuild for that variant first"
+            exit 1
+          fi
+
+          cp "flash_\${VARIANT}.sh" "binaries/binaries_\${VARIANT}/"
+          chmod +x "binaries/binaries_\${VARIANT}/flash_\${VARIANT}.sh"
+          cd "binaries/binaries_\${VARIANT}"
+
+          echo "Flashing (\${VARIANT})..."
+          "./flash_\${VARIANT}.sh"
 
           echo "Rebooting..."
           fastboot reboot
